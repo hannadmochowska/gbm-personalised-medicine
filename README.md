@@ -2,7 +2,6 @@
 
 Final project for AI for Personalised Medicine. Tests whether three published, mechanistically grounded ODE models of glioblastoma (GBM) signalling pathways, parameterised from routine bulk RNA-seq, can predict patient overall survival.
 
-Full write-up: `reports/GBM_ThreeModel_ODE_Report.docx`.
 
 ## Question addressed
 
