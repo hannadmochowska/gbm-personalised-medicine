@@ -2,8 +2,6 @@
 
 Final project for AI for Personalised Medicine. Tests whether three published, mechanistically grounded ODE models of glioblastoma (GBM) signalling pathways, parameterised from routine bulk RNA-seq, can predict patient overall survival — individually and combined into a single cross-dataset signature.
 
-Full write-up: `reports/GBM_ThreeModel_ODE_Report.docx`. (Q2, the drug-viability predictor referenced below, is answered separately in `reports/GBM_Assignment2_Report.docx`.)
-
 ## Questions addressed
 
 - **Q3** (are there any useful ODE models?): three models tested individually, one each for DNA-damage response (p53), cell-cycle control (Rb-E2F), and growth-factor signalling (RTK/RAS/MAPK + PI3K/AKT/mTOR). None predicted survival alone.
