@@ -1,10 +1,5 @@
 # Q1 — Build a Cross-Dataset Survival Signature: TCGA-GBM Training
 #
-# (Duplicate of Q1_build_signature_TCGA.R, recreated under a new filename
-# after the original became locked/inaccessible via a mount issue. Content
-# is identical, including the TCGA duplicate-patient dedup fix. Once the
-# original file is accessible again, this duplicate can be deleted.)
-#
 # Purpose: Answer the brief's Q1 ("build a predictor of patient response
 # which works across different datasets") properly, by fixing the two
 # things that made the earlier single-feature p53 test fail to replicate
@@ -35,12 +30,6 @@
 #     signature (10 genes, all confirmed present in both cohorts), the
 #     strongest single-feature discovery result in this project before now,
 #     never previously tested for cross-dataset replication.
-#
-# This script TRAINS ONLY on TCGA-GBM (discovery). It saves the frozen,
-# cross-validated coefficients to Q1_signature_coefficients.csv. The
-# companion script, Q1_validate_signature_CPTAC.R, applies those coefficients
-# unchanged to CPTAC-GBM — no re-fitting, no re-scanning, same discipline as
-# the earlier p53 validation.
 #
 # Prerequisites (run first, in this order):
 #   GBM_p53_preproc.R, GBM_RbE2F_preproc.R, GBM_Pappalardo_preproc.R,
@@ -220,8 +209,6 @@ cat(sprintf("\nTCGA in-sample check: C-index = %.3f, Cox p = %.4g\n",
             c_index_tcga, summary(fit_check)$coefficients[, "Pr(>|z|)"]))
 
 # Median-split KM (illustrative only — median split, not threshold-optimised,
-# to avoid the small-unstable-subgroup artefact seen in Models 2 and 3 of
-# the ODE report)
 med <- median(risk_score)
 grp <- ifelse(risk_score > med, paste0("High risk score (n=", sum(risk_score > med), ")"),
                                  paste0("Low risk score (n=",  sum(risk_score <= med), ")"))
