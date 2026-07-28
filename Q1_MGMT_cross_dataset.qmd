@@ -1,0 +1,1092 @@
+---
+title: "Cross-Dataset Prediction of a Temozolomide-Response-Associated Biomarker in Glioblastoma"
+author: "Saidat Bello"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Show code"
+    embed-resources: true
+    df-print: paged
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+---
+
+# Question 1
+
+## Study aim
+
+This analysis addresses the following project question:
+
+> Can a predictor of patient response be developed that works across different datasets?
+
+This analysis addresses the project question indirectly by predicting a
+temozolomide-response-associated biomarker rather than observed patient
+response. A gene-expression classifier is developed in the TCGA glioblastoma
+cohort and externally evaluated in the CPTAC glioblastoma cohort. The outcome
+is MGMT promoter methylation, which is associated with temozolomide benefit
+but is not itself a direct measurement of treatment response.
+
+The specific analysis question is:
+
+> Can a gene-expression predictor of an MGMT methylation biomarker associated
+> with temozolomide response transfer from TCGA to CPTAC?
+
+The analysis prioritises features measured in both cohorts. This provides a practical compromise between model completeness and cross-dataset portability.
+
+# 1. Analysis setup
+
+```{r}
+#| label: setup
+#| include: false
+
+required_packages <- c(
+  "data.table",
+  "dplyr",
+  "tidyr",
+  "stringr",
+  "tibble",
+  "janitor",
+  "glmnet",
+  "pROC",
+  "ggplot2",
+  "knitr"
+)
+
+missing_packages <- required_packages[
+  !required_packages %in% rownames(installed.packages())
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    paste0(
+      "Install the following packages before rendering: ",
+      paste(missing_packages, collapse = ", ")
+    )
+  )
+}
+
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(tibble)
+library(janitor)
+library(glmnet)
+library(pROC)
+library(ggplot2)
+library(knitr)
+
+set.seed(123)
+```
+
+```{r}
+#| label: file-paths
+#| include: false
+
+project_directory <- "/Users/saidatbello/Documents/AI in P - final project"
+
+tcga_patient_file <- file.path(
+  project_directory,
+  "gbm_tcga_pan_can_atlas_2018:data_clinical_patient.txt"
+)
+tcga_sample_file <- file.path(project_directory, "data_clinical_sample.txt")
+tcga_expression_file <- file.path(
+  project_directory,
+  "data_mrna_seq_v2_rsem.txt"
+)
+tcga_methylation_file <- file.path(
+  project_directory,
+  "data_methylation_hm450.txt"
+)
+
+cptac_patient_file <- file.path(
+  project_directory,
+  "gbm_cptac_2021:data_clinical_patient.txt"
+)
+cptac_sample_file <- file.path(project_directory, "data_clinical_sample1.txt")
+cptac_expression_file <- file.path(
+  project_directory,
+  "data_mrna_seq_fpkm.txt"
+)
+cptac_methylation_file <- file.path(
+  project_directory,
+  "data_methylation_epic.txt"
+)
+
+required_files <- c(
+  tcga_patient_file,
+  tcga_sample_file,
+  tcga_expression_file,
+  tcga_methylation_file,
+  cptac_patient_file,
+  cptac_sample_file,
+  cptac_expression_file,
+  cptac_methylation_file
+)
+
+missing_files <- required_files[!file.exists(required_files)]
+
+if (length(missing_files) > 0) {
+  stop(
+    paste0(
+      "The following files were not found: ",
+      paste(missing_files, collapse = ", ")
+    )
+  )
+}
+```
+
+# 2. Data sources and cohort preparation
+
+TCGA was used as the model-development cohort and CPTAC was used as the independent external-validation cohort. Patient and sample files were used to confirm identifiers and retain one tumour sample per patient.
+
+```{r}
+#| label: load-clinical
+
+read_cbio_clinical <- function(path) {
+  readr::read_tsv(
+    path,
+    comment = "#",
+    show_col_types = FALSE,
+    na = c("", "NA", "NaN")
+  ) |>
+    clean_names()
+}
+
+tcga_patient <- read_cbio_clinical(tcga_patient_file)
+tcga_sample <- read_cbio_clinical(tcga_sample_file)
+
+cptac_patient <- read_cbio_clinical(cptac_patient_file)
+cptac_sample <- read_cbio_clinical(cptac_sample_file)
+```
+
+```{r}
+#| label: select-one-sample
+
+tcga_sample_primary <- tcga_sample |>
+  mutate(
+    sample_priority = case_when(
+      str_to_lower(sample_type) == "primary" ~ 1,
+      str_detect(str_to_lower(tumor_type), "untreated") ~ 1,
+      TRUE ~ 2
+    )
+  ) |>
+  arrange(patient_id, sample_priority, sample_id) |>
+  distinct(patient_id, .keep_all = TRUE) |>
+  select(-sample_priority)
+
+cptac_sample_primary <- cptac_sample |>
+  arrange(patient_id, sample_id) |>
+  distinct(patient_id, .keep_all = TRUE)
+```
+
+```{r}
+#| label: cohort-summary
+
+cohort_summary <- tibble(
+  cohort = c("TCGA", "CPTAC"),
+  patient_records = c(nrow(tcga_patient), nrow(cptac_patient)),
+  sample_records = c(nrow(tcga_sample), nrow(cptac_sample)),
+  unique_patients_after_selection = c(
+    n_distinct(tcga_sample_primary$patient_id),
+    n_distinct(cptac_sample_primary$patient_id)
+  )
+)
+
+kable(
+  cohort_summary,
+  caption = "Clinical cohort summary before molecular-data matching"
+)
+```
+
+# 3. MGMT promoter methylation outcome
+
+The supplied TCGA file is probe-level, whereas the supplied CPTAC file is
+gene-indexed and does not retain CpG probe identifiers. A comparable
+gene-level MGMT methylation score was therefore constructed in both cohorts
+by averaging all rows annotated to `MGMT` for each selected tumour sample.
+This is a study-specific molecular outcome and is not the clinical
+MGMT-STP27 classifier.
+
+Only MGMT-annotated rows are extracted from each large methylation file,
+avoiding the need to load the complete matrices into memory.
+
+```{r}
+#| label: methylation-functions
+#| include: false
+
+extract_mgmt_rows <- function(file_path, cohort) {
+  header <- readLines(file_path, n = 1, warn = FALSE)
+
+  grep_pattern <- if (cohort == "TCGA") {
+    "\tMGMT\t"
+  } else {
+    "^MGMT\t"
+  }
+  temp_file <- tempfile(fileext = ".txt")
+
+  system2(
+    command = "grep",
+    args = c("-E", shQuote(grep_pattern), shQuote(file_path)),
+    stdout = temp_file,
+    stderr = FALSE
+  )
+
+  matching_rows <- readLines(temp_file, warn = FALSE)
+  unlink(temp_file)
+
+  if (length(matching_rows) == 0) {
+    stop(
+      paste0(
+        "No MGMT-annotated methylation rows were found in ",
+        basename(file_path),
+        ". Check the file structure."
+      )
+    )
+  }
+
+  fread(
+    text = paste(c(header, matching_rows), collapse = "\n"),
+    sep = "\t",
+    na.strings = c("", "NA", "NaN"),
+    data.table = FALSE,
+    check.names = FALSE
+  )
+}
+
+methylation_gene_score <- function(data, cohort, allowed_samples) {
+  data |>
+    select(any_of(allowed_samples)) |>
+    pivot_longer(
+      cols = everything(),
+      names_to = "sample_id",
+      values_to = "beta_value"
+    ) |>
+    mutate(
+      beta_value = suppressWarnings(as.numeric(beta_value)),
+      cohort = cohort
+    ) |>
+    filter(!is.na(beta_value), sample_id %in% allowed_samples) |>
+    group_by(cohort, sample_id) |>
+    summarise(mgmt_beta = mean(beta_value), .groups = "drop")
+}
+
+derive_patient_id <- function(sample_id, cohort) {
+  if (cohort == "TCGA") {
+    substr(sample_id, 1, 12)
+  } else {
+    sample_id
+  }
+}
+```
+
+```{r}
+#| label: extract-mgmt-methylation
+
+tcga_mgmt_raw <- extract_mgmt_rows(
+  tcga_methylation_file,
+  cohort = "TCGA"
+)
+
+cptac_mgmt_raw <- extract_mgmt_rows(
+  cptac_methylation_file,
+  cohort = "CPTAC"
+)
+
+tcga_mgmt <- methylation_gene_score(
+  tcga_mgmt_raw,
+  cohort = "TCGA",
+  allowed_samples = tcga_sample_primary$sample_id
+) |>
+  mutate(
+    patient_id = derive_patient_id(sample_id, "TCGA")
+  )
+
+cptac_mgmt <- methylation_gene_score(
+  cptac_mgmt_raw,
+  cohort = "CPTAC",
+  allowed_samples = cptac_sample_primary$sample_id
+) |>
+  mutate(
+    patient_id = derive_patient_id(sample_id, "CPTAC")
+  )
+```
+
+## 3.1 Defining methylated and unmethylated groups
+
+A two-group clustering model was fitted to the continuous, gene-level TCGA
+MGMT methylation scores. The midpoint between the two cluster centres was
+retained as the fixed classification threshold and applied unchanged to
+CPTAC.
+
+```{r}
+#| label: define-mgmt-status
+
+tcga_kmeans <- kmeans(
+  tcga_mgmt$mgmt_beta,
+  centers = 2,
+  nstart = 50
+)
+
+cluster_centres <- sort(as.numeric(tcga_kmeans$centers))
+mgmt_cutpoint <- mean(cluster_centres)
+
+tcga_mgmt <- tcga_mgmt |>
+  mutate(
+    mgmt_status = if_else(
+      mgmt_beta >= mgmt_cutpoint,
+      "Methylated",
+      "Unmethylated"
+    )
+  )
+
+cptac_mgmt <- cptac_mgmt |>
+  mutate(
+    mgmt_status = if_else(
+      mgmt_beta >= mgmt_cutpoint,
+      "Methylated",
+      "Unmethylated"
+    )
+  )
+```
+
+```{r}
+#| label: mgmt-cutpoint-output
+
+tibble(
+  lower_cluster_centre = cluster_centres[1],
+  upper_cluster_centre = cluster_centres[2],
+  fixed_cutpoint = mgmt_cutpoint
+) |>
+  mutate(across(where(is.numeric), \(x) round(x, 3))) |>
+  kable(
+    caption = "TCGA-derived MGMT methylation classification threshold"
+  )
+```
+
+```{r}
+#| label: mgmt-class-distribution
+
+bind_rows(
+  tcga_mgmt |> select(cohort, mgmt_status),
+  cptac_mgmt |> select(cohort, mgmt_status)
+) |>
+  count(cohort, mgmt_status) |>
+  group_by(cohort) |>
+  mutate(percent = round(100 * n / sum(n), 1)) |>
+  ungroup() |>
+  kable(
+    caption = "MGMT promoter methylation class distribution"
+  )
+```
+
+```{r}
+#| label: mgmt-distribution-plot
+#| fig-cap: "Distribution of the gene-level MGMT methylation score in TCGA and CPTAC."
+
+bind_rows(
+  tcga_mgmt |> select(cohort, mgmt_beta, mgmt_status),
+  cptac_mgmt |> select(cohort, mgmt_beta, mgmt_status)
+) |>
+  ggplot(aes(x = mgmt_beta, fill = mgmt_status)) +
+  geom_histogram(bins = 25, alpha = 0.65, position = "identity") +
+  geom_vline(
+    xintercept = mgmt_cutpoint,
+    linetype = "dashed"
+  ) +
+  facet_wrap(~ cohort, scales = "free_y") +
+  labs(
+    x = "Mean MGMT-annotated beta value",
+    y = "Number of samples",
+    fill = "MGMT status"
+  ) +
+  theme_minimal()
+```
+
+# 4. Gene-expression preprocessing
+
+The TCGA and CPTAC expression matrices use different quantification methods. Both matrices were therefore log-transformed. Only gene symbols present in both cohorts were retained.
+
+```{r}
+#| label: expression-functions
+#| include: false
+
+read_expression_matrix <- function(path, cohort, allowed_samples) {
+  expression_data <- fread(
+    path,
+    sep = "\t",
+    na.strings = c("", "NA", "NaN"),
+    data.table = FALSE,
+    check.names = FALSE
+  )
+
+  gene_column <- names(expression_data)[
+    str_detect(
+      str_to_lower(names(expression_data)),
+      "hugo_symbol|gene_symbol|symbol"
+    )
+  ][1]
+
+  if (is.na(gene_column)) {
+    gene_column <- names(expression_data)[1]
+  }
+
+  expression_data <- expression_data |>
+    rename(gene = all_of(gene_column)) |>
+    mutate(gene = as.character(gene)) |>
+    filter(!is.na(gene), gene != "")
+
+  expression_data <- expression_data |>
+    select(gene, any_of(allowed_samples))
+
+  expression_long <- expression_data |>
+    pivot_longer(
+      cols = -gene,
+      names_to = "sample_id",
+      values_to = "expression"
+    ) |>
+    mutate(
+      expression = suppressWarnings(as.numeric(expression)),
+      patient_id = derive_patient_id(sample_id, cohort)
+    ) |>
+    filter(!is.na(expression)) |>
+    group_by(patient_id, gene) |>
+    summarise(expression = mean(expression), .groups = "drop")
+
+  expression_long
+}
+```
+
+```{r}
+#| label: load-expression
+
+tcga_expression_long <- read_expression_matrix(
+  tcga_expression_file,
+  cohort = "TCGA",
+  allowed_samples = tcga_sample_primary$sample_id
+)
+
+cptac_expression_long <- read_expression_matrix(
+  cptac_expression_file,
+  cohort = "CPTAC",
+  allowed_samples = cptac_sample_primary$sample_id
+)
+```
+
+```{r}
+#| label: common-genes
+
+common_genes <- intersect(
+  unique(tcga_expression_long$gene),
+  unique(cptac_expression_long$gene)
+)
+
+expression_overlap <- tibble(
+  measure = c(
+    "TCGA genes",
+    "CPTAC genes",
+    "Genes present in both cohorts"
+  ),
+  number = c(
+    n_distinct(tcga_expression_long$gene),
+    n_distinct(cptac_expression_long$gene),
+    length(common_genes)
+  )
+)
+
+kable(
+  expression_overlap,
+  caption = "Gene-expression feature availability across cohorts"
+)
+```
+
+## 4.1 Feature filtering
+
+Genes were filtered using TCGA only. Genes with excessive missingness or near-zero variance were removed. The 500 most variable genes among those also measured in CPTAC were retained as candidate predictors.
+
+```{r}
+#| label: select-features
+
+tcga_candidate <- tcga_expression_long |>
+  filter(gene %in% common_genes) |>
+  group_by(gene) |>
+  summarise(
+    variance = var(log2(expression + 1), na.rm = TRUE),
+    non_missing = sum(!is.na(expression)),
+    .groups = "drop"
+  ) |>
+  filter(
+    is.finite(variance),
+    variance > 0,
+    non_missing >= 0.8 * n_distinct(tcga_expression_long$patient_id)
+  ) |>
+  arrange(desc(variance)) |>
+  slice_head(n = 500)
+
+selected_genes <- tcga_candidate$gene
+```
+
+```{r}
+#| label: selected-feature-summary
+
+tibble(
+  candidate_genes_available_in_both_cohorts = length(common_genes),
+  genes_entering_model_development = length(selected_genes)
+) |>
+  kable(
+    caption = "Feature-filtering summary"
+  )
+```
+
+# 5. Construction of modelling datasets
+
+```{r}
+#| label: create-expression-wide
+#| include: false
+
+make_expression_wide <- function(data, genes) {
+  data |>
+    filter(gene %in% genes) |>
+    mutate(expression = log2(expression + 1)) |>
+    select(patient_id, gene, expression) |>
+    pivot_wider(
+      names_from = gene,
+      values_from = expression,
+      values_fn = mean
+    )
+}
+
+tcga_expression_wide <- make_expression_wide(
+  tcga_expression_long,
+  selected_genes
+)
+
+cptac_expression_wide <- make_expression_wide(
+  cptac_expression_long,
+  selected_genes
+)
+
+tcga_model_data <- tcga_mgmt |>
+  select(patient_id, mgmt_status, mgmt_beta) |>
+  inner_join(tcga_expression_wide, by = "patient_id") |>
+  distinct(patient_id, .keep_all = TRUE)
+
+cptac_model_data <- cptac_mgmt |>
+  select(patient_id, mgmt_status, mgmt_beta) |>
+  inner_join(cptac_expression_wide, by = "patient_id") |>
+  distinct(patient_id, .keep_all = TRUE)
+```
+
+```{r}
+#| label: matched-cohort-summary
+
+tibble(
+  cohort = c("TCGA development", "CPTAC validation"),
+  matched_patients = c(
+    nrow(tcga_model_data),
+    nrow(cptac_model_data)
+  ),
+  methylated = c(
+    sum(tcga_model_data$mgmt_status == "Methylated"),
+    sum(cptac_model_data$mgmt_status == "Methylated")
+  ),
+  unmethylated = c(
+    sum(tcga_model_data$mgmt_status == "Unmethylated"),
+    sum(cptac_model_data$mgmt_status == "Unmethylated")
+  )
+) |>
+  kable(
+    caption = "Final matched cohorts used for model development and validation"
+  )
+```
+
+# 6. Model development in TCGA
+
+A LASSO logistic-regression model was used because it performs feature selection while limiting overfitting in high-dimensional molecular data.
+
+The outcome was coded as:
+
+- `1`: methylated
+- `0`: unmethylated
+
+Missing expression values were imputed using TCGA medians. TCGA means and standard deviations were then used to standardise both datasets, preventing information from CPTAC from influencing model development.
+
+```{r}
+#| label: prepare-model-matrices
+#| include: false
+
+feature_columns <- intersect(
+  selected_genes,
+  intersect(
+    names(tcga_model_data),
+    names(cptac_model_data)
+  )
+)
+
+x_tcga_raw <- as.matrix(
+  tcga_model_data[, feature_columns, drop = FALSE]
+)
+
+x_cptac_raw <- as.matrix(
+  cptac_model_data[, feature_columns, drop = FALSE]
+)
+
+storage.mode(x_tcga_raw) <- "numeric"
+storage.mode(x_cptac_raw) <- "numeric"
+
+x_tcga_unprocessed <- x_tcga_raw
+
+training_medians <- apply(
+  x_tcga_raw,
+  2,
+  median,
+  na.rm = TRUE
+)
+
+for (column in seq_len(ncol(x_tcga_raw))) {
+  x_tcga_raw[is.na(x_tcga_raw[, column]), column] <-
+    training_medians[column]
+
+  x_cptac_raw[is.na(x_cptac_raw[, column]), column] <-
+    training_medians[column]
+}
+
+training_means <- colMeans(x_tcga_raw)
+training_sds <- apply(x_tcga_raw, 2, sd)
+
+usable_columns <- is.finite(training_sds) & training_sds > 0
+
+x_tcga_raw <- x_tcga_raw[, usable_columns, drop = FALSE]
+x_cptac_raw <- x_cptac_raw[, usable_columns, drop = FALSE]
+
+training_means <- training_means[usable_columns]
+training_sds <- training_sds[usable_columns]
+
+x_tcga <- sweep(x_tcga_raw, 2, training_means, "-")
+x_tcga <- sweep(x_tcga, 2, training_sds, "/")
+
+x_cptac <- sweep(x_cptac_raw, 2, training_means, "-")
+x_cptac <- sweep(x_cptac, 2, training_sds, "/")
+
+y_tcga <- ifelse(
+  tcga_model_data$mgmt_status == "Methylated",
+  1,
+  0
+)
+
+y_cptac <- ifelse(
+  cptac_model_data$mgmt_status == "Methylated",
+  1,
+  0
+)
+```
+
+## 6.1 Internal cross-validation
+
+Five-fold cross-validation was performed entirely within TCGA. Each held-out fold was predicted by a model that had not seen those patients.
+Within every outer fold, missing-value imputation and standardisation were
+estimated from that fold's training patients and then applied to its held-out
+patients.
+
+```{r}
+#| label: internal-cross-validation
+
+number_of_folds <- 5
+
+fold_id <- integer(length(y_tcga))
+
+for (class_value in unique(y_tcga)) {
+  class_indices <- which(y_tcga == class_value)
+
+  fold_id[class_indices] <- sample(
+    rep(
+      seq_len(number_of_folds),
+      length.out = length(class_indices)
+    )
+  )
+}
+
+tcga_cv_probability <- rep(NA_real_, length(y_tcga))
+
+for (fold in seq_len(number_of_folds)) {
+  training_index <- fold_id != fold
+  validation_index <- fold_id == fold
+
+  fold_train <- x_tcga_unprocessed[training_index, , drop = FALSE]
+  fold_validation <- x_tcga_unprocessed[validation_index, , drop = FALSE]
+
+  fold_medians <- apply(fold_train, 2, median, na.rm = TRUE)
+  fold_medians[!is.finite(fold_medians)] <- 0
+
+  for (column in seq_len(ncol(fold_train))) {
+    fold_train[is.na(fold_train[, column]), column] <-
+      fold_medians[column]
+    fold_validation[is.na(fold_validation[, column]), column] <-
+      fold_medians[column]
+  }
+
+  fold_means <- colMeans(fold_train)
+  fold_sds <- apply(fold_train, 2, sd)
+  fold_sds[!is.finite(fold_sds) | fold_sds == 0] <- 1
+
+  fold_train <- sweep(fold_train, 2, fold_means, "-")
+  fold_train <- sweep(fold_train, 2, fold_sds, "/")
+  fold_validation <- sweep(fold_validation, 2, fold_means, "-")
+  fold_validation <- sweep(fold_validation, 2, fold_sds, "/")
+
+  fold_model <- cv.glmnet(
+    x = fold_train,
+    y = y_tcga[training_index],
+    family = "binomial",
+    alpha = 1,
+    nfolds = 5,
+    type.measure = "deviance",
+    standardize = FALSE
+  )
+
+  tcga_cv_probability[validation_index] <- as.numeric(
+    predict(
+      fold_model,
+      newx = fold_validation,
+      s = "lambda.min",
+      type = "response"
+    )
+  )
+}
+
+tcga_cv_roc <- roc(
+  response = y_tcga,
+  predictor = tcga_cv_probability,
+  quiet = TRUE
+)
+```
+
+## 6.2 Final frozen model
+
+The final model was fitted using all TCGA patients. The selected coefficients and TCGA preprocessing parameters were then frozen before CPTAC evaluation.
+
+```{r}
+#| label: fit-final-model
+
+final_model <- cv.glmnet(
+  x = x_tcga,
+  y = y_tcga,
+  family = "binomial",
+  alpha = 1,
+  nfolds = 10,
+  type.measure = "deviance",
+  standardize = FALSE
+)
+
+final_coefficients <- coef(
+  final_model,
+  s = "lambda.min"
+)
+
+selected_coefficient_table <- tibble(
+  feature = rownames(final_coefficients),
+  coefficient = as.numeric(final_coefficients)
+) |>
+  filter(
+    feature != "(Intercept)",
+    coefficient != 0
+  ) |>
+  arrange(desc(abs(coefficient)))
+```
+
+```{r}
+#| label: coefficient-table
+
+selected_coefficient_table |>
+  mutate(coefficient = round(coefficient, 4)) |>
+  kable(
+    caption = "Non-zero genes selected by the final TCGA LASSO model"
+  )
+```
+
+```{r}
+#| label: coefficient-plot
+#| fig-cap: "Genes retained in the final TCGA LASSO classifier."
+
+selected_coefficient_table |>
+  slice_head(n = 20) |>
+  mutate(
+    feature = reorder(feature, coefficient)
+  ) |>
+  ggplot(aes(x = feature, y = coefficient)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = "LASSO coefficient"
+  ) +
+  theme_minimal()
+```
+
+# 7. Independent validation in CPTAC
+
+The frozen TCGA model was applied to CPTAC without refitting coefficients, recalculating feature selection or using CPTAC outcome information.
+
+```{r}
+#| label: external-predictions
+
+cptac_probability <- as.numeric(
+  predict(
+    final_model,
+    newx = x_cptac,
+    s = "lambda.min",
+    type = "response"
+  )
+)
+
+cptac_roc <- roc(
+  response = y_cptac,
+  predictor = cptac_probability,
+  quiet = TRUE
+)
+
+# A prespecified probability threshold avoids optimistically selecting and
+# evaluating a cutpoint using the same out-of-fold predictions.
+classification_threshold <- 0.5
+
+tcga_cv_class <- ifelse(
+  tcga_cv_probability >= classification_threshold,
+  1,
+  0
+)
+
+cptac_class <- ifelse(
+  cptac_probability >= classification_threshold,
+  1,
+  0
+)
+```
+
+```{r}
+#| label: metric-functions
+#| include: false
+
+classification_metrics <- function(truth, probability, predicted_class) {
+  true_positive <- sum(truth == 1 & predicted_class == 1)
+  true_negative <- sum(truth == 0 & predicted_class == 0)
+  false_positive <- sum(truth == 0 & predicted_class == 1)
+  false_negative <- sum(truth == 1 & predicted_class == 0)
+
+  tibble(
+    auc = as.numeric(auc(roc(truth, probability, quiet = TRUE))),
+    accuracy = (true_positive + true_negative) / length(truth),
+    sensitivity = ifelse(
+      true_positive + false_negative == 0,
+      NA_real_,
+      true_positive / (true_positive + false_negative)
+    ),
+    specificity = ifelse(
+      true_negative + false_positive == 0,
+      NA_real_,
+      true_negative / (true_negative + false_positive)
+    ),
+    positive_predictive_value = ifelse(
+      true_positive + false_positive == 0,
+      NA_real_,
+      true_positive / (true_positive + false_positive)
+    ),
+    negative_predictive_value = ifelse(
+      true_negative + false_negative == 0,
+      NA_real_,
+      true_negative / (true_negative + false_negative)
+    )
+  )
+}
+```
+
+```{r}
+#| label: performance-table
+
+performance_table <- bind_rows(
+  classification_metrics(
+    y_tcga,
+    tcga_cv_probability,
+    tcga_cv_class
+  ) |>
+    mutate(cohort = "TCGA: five-fold cross-validation"),
+  classification_metrics(
+    y_cptac,
+    cptac_probability,
+    cptac_class
+  ) |>
+    mutate(cohort = "CPTAC: external validation")
+) |>
+  select(cohort, everything()) |>
+  mutate(
+    across(
+      where(is.numeric),
+      \(x) round(x, 3)
+    )
+  )
+
+kable(
+  performance_table,
+  caption = "Internal and external model performance"
+)
+```
+
+```{r}
+#| label: roc-plot
+#| fig-cap: "Receiver operating characteristic curves for TCGA internal cross-validation and CPTAC external validation."
+
+roc_plot_data <- bind_rows(
+  tibble(
+    specificity = tcga_cv_roc$specificities,
+    sensitivity = tcga_cv_roc$sensitivities,
+    cohort = "TCGA cross-validation"
+  ),
+  tibble(
+    specificity = cptac_roc$specificities,
+    sensitivity = cptac_roc$sensitivities,
+    cohort = "CPTAC external validation"
+  )
+)
+
+ggplot(
+  roc_plot_data,
+  aes(
+    x = 1 - specificity,
+    y = sensitivity,
+    linetype = cohort
+  )
+) +
+  geom_line(linewidth = 1) +
+  geom_abline(
+    slope = 1,
+    intercept = 0,
+    linetype = "dotted"
+  ) +
+  coord_equal() +
+  labs(
+    x = "1 - specificity",
+    y = "Sensitivity",
+    linetype = NULL
+  ) +
+  theme_minimal()
+```
+
+```{r}
+#| label: confusion-matrices
+
+tcga_confusion <- table(
+  Predicted = ifelse(
+    tcga_cv_class == 1,
+    "Methylated",
+    "Unmethylated"
+  ),
+  Observed = tcga_model_data$mgmt_status
+)
+
+cptac_confusion <- table(
+  Predicted = ifelse(
+    cptac_class == 1,
+    "Methylated",
+    "Unmethylated"
+  ),
+  Observed = cptac_model_data$mgmt_status
+)
+
+cat("TCGA cross-validation confusion matrix\n\n")
+print(tcga_confusion)
+
+cat("\n\nCPTAC external-validation confusion matrix\n\n")
+print(cptac_confusion)
+```
+
+# 8. Results summary
+
+```{r}
+#| label: dynamic-results
+#| echo: false
+#| results: asis
+
+tcga_auc_value <- round(as.numeric(auc(tcga_cv_roc)), 3)
+cptac_auc_value <- round(as.numeric(auc(cptac_roc)), 3)
+number_selected <- nrow(selected_coefficient_table)
+cptac_predicted_methylated <- sum(cptac_class == 1)
+cptac_specificity_value <- round(
+  sum(y_cptac == 0 & cptac_class == 0) / sum(y_cptac == 0),
+  3
+)
+
+cat(
+  paste0(
+    "After matching methylation and expression data, the development cohort included ",
+    nrow(tcga_model_data),
+    " TCGA patients and the external-validation cohort included ",
+    nrow(cptac_model_data),
+    " CPTAC patients. The final LASSO model retained ",
+    number_selected,
+    " non-zero gene-expression features. ",
+    "The internally cross-validated TCGA AUC was ",
+    tcga_auc_value,
+    ", while the independent CPTAC AUC was ",
+    cptac_auc_value,
+    ". At the prespecified probability threshold of 0.5, ",
+    cptac_predicted_methylated,
+    " of ",
+    length(cptac_class),
+    " CPTAC patients were classified as methylated, giving a specificity of ",
+    cptac_specificity_value,
+    "."
+  )
+)
+```
+
+# 9. Interpretation
+
+The model demonstrated modest discrimination in the independent CPTAC cohort
+(AUC = 0.682), suggesting that some gene-expression signal associated with
+the derived MGMT methylation outcome transferred between datasets. However,
+at the prespecified probability threshold of 0.5, all CPTAC patients were
+classified as methylated. This produced 100% sensitivity but 0% specificity.
+The apparent accuracy of 62.9% therefore reflects the prevalence of the
+methylated class rather than effective binary classification.
+
+These findings provide evidence of limited cross-dataset ranking ability, but
+not of a clinically useful or adequately calibrated binary predictor.
+Differences in expression quantification, methylation measurement, outcome
+construction, class balance and cohort composition may have contributed to
+the poor calibration.
+
+The model deliberately used genes measured in both datasets rather than every feature available in TCGA. This may reduce maximum within-cohort performance, but it increases portability and directly addresses the project brief's suggested compromise between data availability and data completeness.
+
+# 10. Limitations
+
+Several limitations should be considered:
+
+1. The model predicts a temozolomide-response-associated biomarker, not
+   observed patient response. MGMT methylation must therefore be interpreted
+   as a clinically relevant molecular proxy rather than a direct
+   treatment-response endpoint.
+2. The TCGA and CPTAC expression datasets use different quantification pipelines.
+3. The supplied CPTAC matrix does not contain CpG identifiers, so the
+   methylation outcome is a platform-specific average across rows annotated
+   to `MGMT`, classified using a TCGA-derived threshold, rather than
+   MGMT-STP27 or a clinical laboratory assay.
+4. CPTAC contains fewer patients than TCGA, which increases uncertainty around external performance estimates.
+5. The classifier should not be interpreted as clinically deployable without further independent validation and calibration.
+
+# 11. Conclusion
+
+A gene-expression predictor developed in TCGA retained modest discriminatory
+information when applied to CPTAC, but it did not generalise successfully as
+a binary classifier at the prespecified threshold. The analysis therefore
+supports modest cross-dataset discrimination but demonstrates inadequate
+cross-dataset calibration.
+
+Further harmonisation, calibration in a separate dataset and validation
+against a clinically established MGMT outcome would be required before the
+model could be considered practically or clinically useful. A threshold
+selected using CPTAC outcomes would require evaluation in a third independent
+cohort and is not presented here as validated performance.

@@ -1,0 +1,465 @@
+---
+title: "Question 3: Are ODE Models Useful in Glioblastoma?"
+subtitle: "Longitudinal tumour-volume modelling in the LUMIERE cohort"
+author: "Saidat Bello"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Show code"
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+editor: visual
+---
+
+# Study question
+
+This report addresses Question 3 of the project brief:
+
+> Are there any ODE models that are useful?
+
+The analysis evaluates a simple mechanistic model of glioblastoma tumour-volume change using longitudinal LUMIERE MRI segmentations. Its usefulness is judged in two ways:
+
+1.  whether the model describes observed longitudinal tumour volumes; and
+2.  whether its patient-specific growth parameter is associated with the first evaluable radiographic response category.
+
+This report follows the Question 1 cross-dataset analysis. Question 1 showed that static clinical variables did not transport adequately between Burdenko and LUMIERE; Question 3 asks whether longitudinal dynamics provide a more informative representation of response. It is kept as a separate analysis because it uses one longitudinal cohort and addresses mechanistic interpretability rather than external transportability.
+
+Mathematical glioma models commonly represent proliferation together with spatial invasion, and patient-specific parameters can be estimated from serial MRI (Swanson *et al*., 2003). The present analysis begins with a simpler volume-only ODE because the available radiomics table provides repeated segmented volumes rather than spatial tumour-cell density.
+
+# 1. Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+required_packages <- c(
+  "dplyr",
+  "tidyr",
+  "readr",
+  "stringr",
+  "janitor",
+  "ggplot2",
+  "knitr",
+  "pROC"
+)
+
+missing_packages <- required_packages[
+  !required_packages %in% rownames(installed.packages())
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    paste0(
+      "Install the following packages before rendering: ",
+      paste(missing_packages, collapse = ", ")
+    )
+  )
+}
+
+library(dplyr)
+library(tidyr)
+library(readr)
+library(stringr)
+library(janitor)
+library(ggplot2)
+library(knitr)
+library(pROC)
+
+set.seed(123)
+```
+
+```{r}
+#| label: file-paths
+#| include: false
+
+project_directory <- "/Users/saidatbello/Documents/AI in P Final project 2"
+
+radiomics_file <- file.path(
+  project_directory,
+  "LUMIERE-pyradiomics-hdglioauto-features.csv"
+)
+
+rano_file <- file.path(
+  project_directory,
+  "LUMIERE-ExpertRating-v202211.csv"
+)
+
+required_files <- c(radiomics_file, rano_file)
+missing_files <- required_files[!file.exists(required_files)]
+
+if (length(missing_files) > 0) {
+  stop(
+    paste0(
+      "The following files were not found: ",
+      paste(basename(missing_files), collapse = ", ")
+    )
+  )
+}
+```
+
+# 2. Data and longitudinal endpoint
+
+```{r}
+#| label: load-data
+
+radiomics_raw <- read_csv(
+  radiomics_file,
+  na = c("", "NA", "na"),
+  show_col_types = FALSE
+) |>
+  clean_names()
+
+rano_raw <- read_csv(
+  rano_file,
+  na = c("", "NA", "na"),
+  show_col_types = FALSE
+) |>
+  clean_names()
+```
+
+Each segmentation is repeated across four MRI sequences in the radiomics table. The `CT1` row is retained once for each segmentation label to avoid counting the same mask four times. Contrast-enhancing and non-enhancing volumes are added to form one total segmented tumour burden in millilitres. LUMIERE was designed to support longitudinal response-assessment research and includes automated segmentations and radiomic features alongside expert RANO ratings (Suter *et al*., 2022).
+
+The suffixes in time points such as `week-000-1` distinguish scans acquired within the same nominal week. Small offsets preserve their ordering without pretending that their exact acquisition interval is known.
+
+```{r}
+#| label: prepare-volumes
+
+volume_long <- radiomics_raw |>
+  filter(sequence == "CT1") |>
+  transmute(
+    patient,
+    time_point,
+    nominal_week = as.numeric(
+      str_extract(time_point, "(?<=week-)\\d{3}")
+    ),
+    within_week_order = suppressWarnings(
+      as.numeric(str_extract(time_point, "(?<=\\d{3}-)\\d+$"))
+    ),
+    model_week = nominal_week +
+      if_else(is.na(within_week_order), 0, within_week_order / 10),
+    compartment = case_when(
+      label_name == "Contrast-enhancing" ~ "enhancing",
+      label_name == "Non-enhancing" ~ "non_enhancing",
+      TRUE ~ NA_character_
+    ),
+    volume_ml = original_shape_voxel_volume / 1000
+  ) |>
+  filter(!is.na(compartment)) |>
+  select(
+    patient,
+    time_point,
+    nominal_week,
+    model_week,
+    compartment,
+    volume_ml
+  ) |>
+  pivot_wider(
+    names_from = compartment,
+    values_from = volume_ml
+  ) |>
+  mutate(
+    enhancing = replace_na(enhancing, 0),
+    non_enhancing = replace_na(non_enhancing, 0),
+    total_volume_ml = enhancing + non_enhancing
+  ) |>
+  arrange(patient, model_week)
+
+patient_followup <- volume_long |>
+  count(patient, name = "observations")
+
+patient_followup |>
+  summarise(
+    patients = n(),
+    median_observations = median(observations),
+    minimum_observations = min(observations),
+    maximum_observations = max(observations),
+    patients_with_three_or_more = sum(observations >= 3)
+  ) |>
+  kable(caption = "Availability of longitudinal tumour-volume measurements")
+```
+
+# 3. Exponential-growth ODE
+
+The first model is:
+
+\[ \frac{dV}{dt}=rV \]
+
+with analytical solution:
+
+\[ V(t)=V_0e\^{rt}. \]
+
+Here, (V(t)) is segmented tumour volume, (V_0) is patient-specific initial volume and (r) is the net weekly growth rate. Positive (r) indicates net growth and negative (r) indicates net shrinkage. This is a deliberately simple model: treatment, surgery and biological carrying capacity are not represented explicitly.
+
+An exponential form is a reasonable baseline because near-exponential growth has been observed in some untreated glioblastomas. However, other longitudinal studies have found Gompertzian or linear-radial models to fit at least as well or better, so adequacy must be tested rather than assumed (Stensjøen *et al*., 2015).
+
+## 3.1 Patient-level parameter estimation
+
+Patients require at least three distinct measurements. A small offset of 0.1 ml allows zero-volume segmentations to be represented on the logarithmic scale.
+
+```{r}
+#| label: fit-exponential-models
+
+fit_exponential_ode <- function(data) {
+  data <- data |>
+    filter(
+      is.finite(model_week),
+      is.finite(total_volume_ml)
+    ) |>
+    arrange(model_week)
+
+  if (
+    nrow(data) < 3 ||
+    n_distinct(data$model_week) < 3
+  ) {
+    return(
+      tibble(
+        observations = nrow(data),
+        initial_volume_ml = NA_real_,
+        growth_rate_week = NA_real_,
+        doubling_time_weeks = NA_real_,
+        r_squared = NA_real_,
+        rmse_log_volume = NA_real_
+      )
+    )
+  }
+
+  model <- lm(
+    log(total_volume_ml + 0.1) ~ model_week,
+    data = data
+  )
+
+  growth_rate <- unname(coef(model)[["model_week"]])
+
+  tibble(
+    observations = nrow(data),
+    initial_volume_ml = max(
+      exp(unname(coef(model)[["(Intercept)"]])) - 0.1,
+      0
+    ),
+    growth_rate_week = growth_rate,
+    doubling_time_weeks = if_else(
+      growth_rate > 0,
+      log(2) / growth_rate,
+      NA_real_
+    ),
+    r_squared = summary(model)$r.squared,
+    rmse_log_volume = sqrt(mean(residuals(model)^2))
+  )
+}
+
+ode_parameters <- volume_long |>
+  group_by(patient) |>
+  group_modify(\(data, key) fit_exponential_ode(data)) |>
+  ungroup() |>
+  filter(!is.na(growth_rate_week))
+
+ode_parameters |>
+  summarise(
+    fitted_patients = n(),
+    median_growth_rate_week = median(growth_rate_week),
+    growth_rate_iqr = IQR(growth_rate_week),
+    median_model_r_squared = median(r_squared),
+    median_rmse_log_volume = median(rmse_log_volume)
+  ) |>
+  mutate(across(where(is.numeric), \(x) round(x, 3))) |>
+  kable(caption = "Summary of patient-specific ODE fits")
+```
+
+## 3.2 Visual assessment
+
+The figure displays patients spanning the distribution of model fit quality.
+
+```{r}
+#| label: ode-fit-plot
+#| fig-cap: "Observed tumour volumes and exponential ODE fits for illustrative patients."
+
+illustrative_patients <- ode_parameters |>
+  mutate(fit_group = ntile(r_squared, 3)) |>
+  group_by(fit_group) |>
+  slice_max(r_squared, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  pull(patient)
+
+plot_data <- volume_long |>
+  filter(patient %in% illustrative_patients) |>
+  left_join(
+    ode_parameters |>
+      select(
+        patient,
+        initial_volume_ml,
+        growth_rate_week
+      ),
+    by = "patient"
+  ) |>
+  group_by(patient) |>
+  mutate(
+    fitted_volume_ml = (
+      initial_volume_ml + 0.1
+    ) * exp(growth_rate_week * model_week) - 0.1,
+    fitted_volume_ml = pmax(fitted_volume_ml, 0)
+  ) |>
+  ungroup()
+
+ggplot(
+  plot_data,
+  aes(x = model_week, y = total_volume_ml)
+) +
+  geom_point(size = 2) +
+  geom_line(aes(y = fitted_volume_ml), colour = "#2C7FB8") +
+  facet_wrap(~ patient, scales = "free_y") +
+  labs(
+    x = "Nominal week",
+    y = "Total segmented tumour volume (ml)"
+  ) +
+  theme_minimal()
+```
+
+# 4. Is the ODE parameter clinically useful?
+
+The first evaluable expert RANO rating is converted to progression (`PD`) or non-progression (`SD`, `PR`, or `CR`). This matches the endpoint used in the Question 1 report.
+
+```{r}
+#| label: prepare-rano-outcome
+
+rating_column <- names(rano_raw)[
+  str_detect(names(rano_raw), "^rating_according")
+][1]
+
+if (is.na(rating_column)) {
+  stop("The expert RANO rating column could not be identified.")
+}
+
+first_rano <- rano_raw |>
+  rename(rano_rating = all_of(rating_column)) |>
+  mutate(
+    week = suppressWarnings(
+      as.numeric(str_extract(date, "(?<=week-)\\d+"))
+    ),
+    rano_rating = str_to_upper(str_squish(rano_rating))
+  ) |>
+  filter(rano_rating %in% c("PD", "SD", "PR", "CR")) |>
+  arrange(patient, week, date) |>
+  group_by(patient) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  transmute(
+    patient,
+    rano_rating,
+    progression = as.integer(rano_rating == "PD")
+  )
+
+ode_evaluation <- ode_parameters |>
+  inner_join(first_rano, by = "patient")
+
+ode_evaluation |>
+  count(progression, name = "patients") |>
+  mutate(
+    outcome = if_else(
+      progression == 1,
+      "progression",
+      "non_progression"
+    )
+  ) |>
+  select(outcome, patients) |>
+  kable(caption = "ODE cohort by first evaluable RANO outcome")
+```
+
+```{r}
+#| label: growth-rate-comparison
+#| fig-cap: "Patient-specific ODE growth rates by first evaluable RANO outcome."
+
+ode_evaluation |>
+  mutate(
+    outcome = if_else(
+      progression == 1,
+      "progression",
+      "non_progression"
+    )
+  ) |>
+  ggplot(
+    aes(
+      x = outcome,
+      y = growth_rate_week,
+      colour = outcome
+    )
+  ) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.2) +
+  geom_jitter(width = 0.12, alpha = 0.75) +
+  labs(
+    x = "First evaluable RANO outcome",
+    y = "Estimated weekly growth rate"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r}
+#| label: ode-predictive-utility
+
+growth_rate_test <- wilcox.test(
+  growth_rate_week ~ progression,
+  data = ode_evaluation,
+  exact = FALSE
+)
+
+growth_rate_roc <- roc(
+  ode_evaluation$progression,
+  ode_evaluation$growth_rate_week,
+  quiet = TRUE
+)
+
+growth_rate_auc_ci <- as.numeric(
+  ci.auc(growth_rate_roc, method = "delong")
+)
+
+ode_utility <- tibble(
+  evaluable_patients = nrow(ode_evaluation),
+  auc = as.numeric(auc(growth_rate_roc)),
+  lower_95_ci = growth_rate_auc_ci[1],
+  upper_95_ci = growth_rate_auc_ci[3],
+  wilcoxon_p_value = growth_rate_test$p.value
+) |>
+  mutate(
+    across(
+      c(auc, lower_95_ci, upper_95_ci, wilcoxon_p_value),
+      \(x) round(x, 3)
+    )
+  )
+
+ode_utility |>
+  kable(
+    caption = "Association between ODE growth rate and radiographic progression"
+  )
+```
+
+# 5. Answer to Question 3
+
+The exponential ODE provides a compact summary of each patient's longitudinal tumour trajectory: it converts multiple scans into a weekly net growth rate and, when positive, a tumour doubling time. However, usefulness requires more than an interpretable parameter; the model must also fit the trajectories adequately or show a clinically relevant association.
+
+Its clinical usefulness is assessed rather than assumed. The median patient-level model (R\^2) was `r sprintf("%.3f", median(ode_parameters$r_squared))`. The growth-rate parameter distinguished first-evaluable RANO progression from non-progression with an ROC AUC of `r sprintf("%.3f", ode_utility$auc)` (95% CI `r sprintf("%.3f", ode_utility$lower_95_ci)`–`r sprintf("%.3f", ode_utility$upper_95_ci)`).
+
+In this dataset, the median (R\^2) of `r sprintf("%.3f", median(ode_parameters$r_squared))` indicates that a constant exponential growth rate explains only a modest proportion of within-patient variation. The AUC of `r sprintf("%.3f", ode_utility$auc)` is approximately chance, its confidence interval includes 0.5, and the group-comparison (p)-value is `r sprintf("%.3f", ode_utility$wilcoxon_p_value)`. The answer is therefore that this simple exponential ODE has **limited descriptive value and is not useful as a clinical response predictor in its current form**.
+
+This negative result identifies why a more realistic model is needed. A treatment-aware piecewise ODE could allow different rates before and after treatment, while a logistic or treatment-effect model could represent growth saturation and therapy-induced reduction. Those extensions require reliable scan dates and treatment timing to avoid adding unidentifiable parameters.
+
+# 6. Limitations
+
+1.  Time is represented by nominal study week; within-week suffixes have only an ordering offset.
+2.  Automated segmentations may contain measurement error.
+3.  Enhancing plus non-enhancing volume is a pragmatic tumour-burden definition, not a full RANO assessment.
+4.  The model treats treatment effects as part of the net growth rate rather than estimating them separately.
+5.  The association with response is exploratory and is evaluated in the same cohort used to estimate the ODE parameters.
+
+# References
+
+Stensjøen, A.L., Solheim, O., Kvistad, K.A., Håberg, A.K., Salvesen, Ø. and Berntsen, E.M. (2015) 'Growth dynamics of untreated glioblastomas in vivo', *Neuro-Oncology*, 17(10), pp. 1402–1411. doi: [10.1093/neuonc/nov029](https://doi.org/10.1093/neuonc/nov029).
+
+Suter, Y., Knecht, U., Valenzuela, W., Notter, M., Hewer, E., Schucht, P., Wiest, R. and Reyes, M. (2022) 'The LUMIERE dataset: Longitudinal glioblastoma MRI with expert RANO evaluation', *Scientific Data*, 9, 768. doi: [10.1038/s41597-022-01881-7](https://doi.org/10.1038/s41597-022-01881-7).
+
+Swanson, K.R., Bridge, C., Murray, J.D. and Alvord, E.C. Jr (2003) 'Virtual and real brain tumors: Using mathematical modeling to quantify glioma growth and invasion', *Journal of the Neurological Sciences*, 216(1), pp. 1–10. doi: [10.1016/j.jns.2003.06.001](https://doi.org/10.1016/j.jns.2003.06.001).

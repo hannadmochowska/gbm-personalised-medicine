@@ -1,0 +1,822 @@
+---
+title: "Cross-Dataset Prediction of Radiotherapy Response in Glioblastoma"
+author: "Saidat Bello"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Show code"
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+editor: visual
+---
+
+# Study aim
+
+This analysis addresses Question 1 of the project brief:
+
+> Can a predictor of patient response be developed that works across different datasets?
+
+The model will be developed using the Burdenko Glioblastoma Progression Dataset and externally evaluated using the independent LUMIERE cohort. Unlike the earlier MGMT analysis, the outcome here is an observed radiographic treatment-response assessment.
+
+The primary analysis question is:
+
+> Can routinely available clinical and imaging features distinguish true progression from non-progression after radiotherapy in an independent glioblastoma cohort?
+
+This design connects two complementary resources: Burdenko provides radiotherapy-planning data and longitudinal response labels, while LUMIERE provides longitudinal multimodal MRI, automated segmentations and expert RANO assessments (Zolotova *et al*., 2023; Suter *et al*., 2022).
+
+# 1. Analysis setup
+
+```{r}
+#| label: setup
+#| include: false
+
+required_packages <- c(
+  "dplyr",
+  "tidyr",
+  "readr",
+  "stringr",
+  "janitor",
+  "ggplot2",
+  "knitr",
+  "glmnet",
+  "pROC"
+)
+
+missing_packages <- required_packages[
+  !required_packages %in% rownames(installed.packages())
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    paste0(
+      "Install the following packages before rendering: ",
+      paste(missing_packages, collapse = ", ")
+    )
+  )
+}
+
+library(dplyr)
+library(tidyr)
+library(readr)
+library(stringr)
+library(janitor)
+library(ggplot2)
+library(knitr)
+library(glmnet)
+library(pROC)
+
+set.seed(123)
+```
+
+```{r}
+#| label: file-paths
+#| include: false
+
+project_directory <- "/Users/saidatbello/Documents/AI in P Final project 2"
+
+burdenko_clinical_file <- file.path(
+  project_directory,
+  "Burdenko-GBM-clinical-data.csv"
+)
+
+burdenko_manifest_file <- file.path(
+  project_directory,
+  "GC_manifest_Burdenko-GBM-Progression_20260326.csv"
+)
+
+lumiere_rano_file <- file.path(
+  project_directory,
+  "LUMIERE-ExpertRating-v202211.csv"
+)
+
+lumiere_clinical_file <- file.path(
+  project_directory,
+  "LUMIERE-Demographics_Pathology.csv"
+)
+
+lumiere_radiomics_file <- file.path(
+  project_directory,
+  "LUMIERE-pyradiomics-hdglioauto-features.csv"
+)
+
+burdenko_rt_manifest_file <- file.path(
+  project_directory,
+  "GC File Manifest 2026-07-28 14-51-31.csv"
+)
+
+required_files <- c(
+  burdenko_clinical_file,
+  burdenko_manifest_file,
+  lumiere_rano_file,
+  lumiere_clinical_file,
+  lumiere_radiomics_file
+)
+
+missing_files <- required_files[!file.exists(required_files)]
+
+if (length(missing_files) > 0) {
+  stop(
+    paste0(
+      "The following files were not found: ",
+      paste(basename(missing_files), collapse = ", ")
+    )
+  )
+}
+```
+
+# 2. Data sources
+
+## 2.1 Burdenko development cohort
+
+Burdenko contains radiotherapy-planning studies, longitudinal follow-up MRI, clinical characteristics and response labels for 180 patients. The first recorded follow-up response is used as the primary development outcome (Zolotova *et al*., 2023).
+
+```{r}
+#| label: load-burdenko
+
+burdenko_raw <- read_csv(
+  burdenko_clinical_file,
+  na = c("", " ", "NA"),
+  show_col_types = FALSE
+) |>
+  clean_names()
+
+burdenko_manifest <- read_csv(
+  burdenko_manifest_file,
+  show_col_types = FALSE
+) |>
+  clean_names()
+```
+
+## 2.2 LUMIERE external-validation cohort
+
+LUMIERE contains longitudinal MRI from 91 patients together with expert RANO assessments, demographics, pathology information, automated segmentations and precomputed radiomic features (Suter *et al*., 2022). The first evaluable RANO assessment after the operative period is used as the external-validation outcome.
+
+```{r}
+#| label: load-lumiere
+
+lumiere_rano_raw <- read_csv(
+  lumiere_rano_file,
+  na = c("", "NA", "na"),
+  show_col_types = FALSE
+) |>
+  clean_names()
+
+lumiere_clinical <- read_csv(
+  lumiere_clinical_file,
+  na = c("", "NA", "na"),
+  show_col_types = FALSE
+) |>
+  clean_names()
+
+lumiere_radiomics <- read_csv(
+  lumiere_radiomics_file,
+  na = c("", "NA", "na"),
+  show_col_types = FALSE
+) |>
+  clean_names()
+```
+
+# 3. Initial data audit
+
+```{r}
+#| label: dataset-dimensions
+
+tibble(
+  dataset = c(
+    "Burdenko clinical",
+    "Burdenko imaging manifest",
+    "LUMIERE RANO ratings",
+    "LUMIERE clinical",
+    "LUMIERE radiomics"
+  ),
+  rows = c(
+    nrow(burdenko_raw),
+    nrow(burdenko_manifest),
+    nrow(lumiere_rano_raw),
+    nrow(lumiere_clinical),
+    nrow(lumiere_radiomics)
+  ),
+  columns = c(
+    ncol(burdenko_raw),
+    ncol(burdenko_manifest),
+    ncol(lumiere_rano_raw),
+    ncol(lumiere_clinical),
+    ncol(lumiere_radiomics)
+  )
+) |>
+  kable(caption = "Dimensions of the available source tables")
+```
+
+```{r}
+#| label: burdenko-file-availability
+
+burdenko_manifest |>
+  count(image_modality, name = "files") |>
+  arrange(desc(files)) |>
+  kable(caption = "Burdenko manifest entries by imaging modality")
+```
+
+# 4. Harmonised response endpoint
+
+The primary endpoint is binary:
+
+-   `progression`: true progressive disease at the first evaluable follow-up;
+-   `non_progression`: response, stable disease, partial response, complete response or pseudoprogression.
+
+Pseudoprogression is included with non-progression because it does not represent true tumour growth. A sensitivity analysis will repeat modelling after excluding pseudoprogression.
+
+RANO was developed to standardise high-grade glioma response assessment by combining imaging change with relevant clinical information (Wen *et al*., 2010). The binary harmonisation used here is a project-specific simplification and is not a replacement for full clinical RANO review.
+
+## 4.1 Burdenko outcome
+
+```{r}
+#| label: burdenko-outcome
+
+burdenko <- burdenko_raw |>
+  mutate(
+    response_1st_fup = str_to_lower(str_squish(response_1st_fup)),
+    response_binary = case_when(
+      str_detect(response_1st_fup, "progression") &
+        !str_detect(response_1st_fup, "pseudo") ~ "progression",
+      response_1st_fup %in% c(
+        "response",
+        "stable",
+        "pseudo progression"
+      ) ~ "non_progression",
+      TRUE ~ NA_character_
+    ),
+    pseudoprogression = response_1st_fup == "pseudo progression"
+  )
+
+burdenko |>
+  count(response_1st_fup, response_binary, name = "patients") |>
+  arrange(desc(patients)) |>
+  kable(caption = "Burdenko first-follow-up response classification")
+```
+
+## 4.2 LUMIERE outcome
+
+```{r}
+#| label: lumiere-outcome
+
+rating_column <- names(lumiere_rano_raw)[
+  str_detect(names(lumiere_rano_raw), "^rating_according")
+][1]
+
+if (is.na(rating_column)) {
+  stop("The expert RANO rating column could not be identified.")
+}
+
+lumiere_rano <- lumiere_rano_raw |>
+  rename(rano_rating = all_of(rating_column)) |>
+  mutate(
+    week = suppressWarnings(
+      as.numeric(str_extract(date, "(?<=week-)\\d+"))
+    ),
+    rano_rating = str_to_upper(str_squish(rano_rating))
+  )
+
+lumiere_first_response <- lumiere_rano |>
+  filter(rano_rating %in% c("PD", "SD", "PR", "CR")) |>
+  arrange(patient, week, date) |>
+  group_by(patient) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  mutate(
+    response_binary = if_else(
+      rano_rating == "PD",
+      "progression",
+      "non_progression"
+    )
+  )
+
+lumiere_first_response |>
+  count(rano_rating, response_binary, name = "patients") |>
+  arrange(desc(patients)) |>
+  kable(caption = "LUMIERE first evaluable RANO response")
+```
+
+## 4.3 Cross-cohort endpoint distribution
+
+```{r}
+#| label: endpoint-distribution
+
+endpoint_distribution <- bind_rows(
+  burdenko |>
+    filter(!is.na(response_binary)) |>
+    transmute(cohort = "Burdenko development", response_binary),
+  lumiere_first_response |>
+    transmute(cohort = "LUMIERE validation", response_binary)
+) |>
+  count(cohort, response_binary, name = "patients") |>
+  group_by(cohort) |>
+  mutate(percent = round(100 * patients / sum(patients), 1)) |>
+  ungroup()
+
+endpoint_distribution |>
+  kable(caption = "Harmonised response distribution across cohorts")
+```
+
+```{r}
+#| label: endpoint-plot
+#| fig-cap: "Distribution of the harmonised radiographic response endpoint."
+
+endpoint_distribution |>
+  ggplot(
+    aes(
+      x = cohort,
+      y = patients,
+      fill = response_binary
+    )
+  ) +
+  geom_col(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    x = NULL,
+    y = "Proportion of patients",
+    fill = "Response"
+  ) +
+  theme_minimal()
+```
+
+# 5. Cross-dataset clinical predictor
+
+The first executable model is deliberately restricted to variables available in both cohorts: age, sex, MGMT promoter methylation and IDH status. This provides a direct test of transportability without using LUMIERE outcomes during model development. Missing molecular results are retained as an explicit `unknown` category.
+
+The downloaded Burdenko radiotherapy manifest contains controlled-access RTPLAN and RTSTRUCT files. Those files are therefore reserved for a later imaging extension and are not required for the clinical model below.
+
+## 5.1 Harmonise shared predictors
+
+```{r}
+#| label: harmonise-predictors
+
+normalise_sex <- function(x) {
+  case_when(
+    str_to_lower(str_squish(x)) %in% c("f", "female") ~ "female",
+    str_to_lower(str_squish(x)) %in% c("m", "male") ~ "male",
+    TRUE ~ "unknown"
+  )
+}
+
+normalise_mgmt <- function(x) {
+  case_when(
+    str_detect(str_to_lower(str_squish(x)), "^positive$|^methylated$") ~
+      "methylated",
+    str_detect(str_to_lower(str_squish(x)), "^negative$|^not methylated$") ~
+      "not_methylated",
+    TRUE ~ "unknown"
+  )
+}
+
+normalise_idh <- function(x) {
+  case_when(
+    str_detect(str_to_lower(str_squish(x)), "positive|mut") ~ "mutant",
+    str_detect(str_to_lower(str_squish(x)), "negative|^wt$") ~ "wild_type",
+    TRUE ~ "unknown"
+  )
+}
+
+burdenko_model <- burdenko |>
+  filter(!is.na(response_binary)) |>
+  transmute(
+    patient = anonym_patient_id,
+    outcome = if_else(response_binary == "progression", 1, 0),
+    age = as.numeric(age_at_study_date),
+    sex = normalise_sex(sex),
+    mgmt = normalise_mgmt(mgmt),
+    idh = normalise_idh(idh1_2)
+  )
+
+lumiere_model <- lumiere_first_response |>
+  select(patient, response_binary) |>
+  inner_join(lumiere_clinical, by = "patient") |>
+  transmute(
+    patient,
+    outcome = if_else(response_binary == "progression", 1, 0),
+    age = as.numeric(age_at_surgery_years),
+    sex = normalise_sex(sex),
+    mgmt = normalise_mgmt(mgmt_qualitative),
+    idh = normalise_idh(idh_wt_wild_type)
+  )
+
+predictor_audit <- bind_rows(
+  burdenko_model |> mutate(cohort = "Burdenko development"),
+  lumiere_model |> mutate(cohort = "LUMIERE validation")
+) |>
+  group_by(cohort) |>
+  summarise(
+    patients = n(),
+    progression = sum(outcome),
+    median_age = median(age, na.rm = TRUE),
+    female = sum(sex == "female"),
+    mgmt_unknown = sum(mgmt == "unknown"),
+    idh_unknown = sum(idh == "unknown"),
+    .groups = "drop"
+  )
+
+predictor_audit |>
+  kable(caption = "Audit of harmonised model variables")
+```
+
+## 5.2 Development-only cross-validation
+
+A ridge logistic regression is used because the development cohort contains few progression events and molecular variables have substantial missingness. Ridge regularisation shrinks coefficients to reduce instability, and the penalty path is fitted using coordinate descent (Friedman, Hastie and Tibshirani, 2010). Five stratified folds generate held-out Burdenko predictions. Within every outer training fold, `cv.glmnet()` selects the ridge penalty. The operating threshold is chosen from these held-out development predictions only.
+
+```{r}
+#| label: cross-validation
+
+model_formula <- ~ age + sex + mgmt + idh
+
+prepare_design <- function(data, age_median) {
+  data |>
+    mutate(
+      age = if_else(is.na(age), age_median, age),
+      sex = factor(sex, levels = c("female", "male", "unknown")),
+      mgmt = factor(
+        mgmt,
+        levels = c("not_methylated", "methylated", "unknown")
+      ),
+      idh = factor(idh, levels = c("wild_type", "mutant", "unknown"))
+    ) |>
+    model.matrix(model_formula, data = _) |>
+    (\(x) x[, colnames(x) != "(Intercept)", drop = FALSE])()
+}
+
+make_stratified_folds <- function(y, k = 5) {
+  folds <- integer(length(y))
+  for (class_value in sort(unique(y))) {
+    class_rows <- sample(which(y == class_value))
+    folds[class_rows] <- rep(seq_len(k), length.out = length(class_rows))
+  }
+  folds
+}
+
+set.seed(123)
+outer_fold <- make_stratified_folds(burdenko_model$outcome, k = 5)
+burdenko_model$cv_probability <- NA_real_
+
+for (fold in seq_len(5)) {
+  analysis_rows <- outer_fold != fold
+  assessment_rows <- outer_fold == fold
+  fold_age_median <- median(
+    burdenko_model$age[analysis_rows],
+    na.rm = TRUE
+  )
+
+  x_analysis <- prepare_design(
+    burdenko_model[analysis_rows, ],
+    fold_age_median
+  )
+  x_assessment <- prepare_design(
+    burdenko_model[assessment_rows, ],
+    fold_age_median
+  )
+
+  inner_folds <- make_stratified_folds(
+    burdenko_model$outcome[analysis_rows],
+    k = 5
+  )
+
+  ridge_cv <- cv.glmnet(
+    x = x_analysis,
+    y = burdenko_model$outcome[analysis_rows],
+    family = "binomial",
+    alpha = 0,
+    foldid = inner_folds,
+    type.measure = "deviance"
+  )
+
+  burdenko_model$cv_probability[assessment_rows] <- as.numeric(
+    predict(
+      ridge_cv,
+      newx = x_assessment,
+      s = "lambda.min",
+      type = "response"
+    )
+  )
+}
+
+development_roc <- roc(
+  burdenko_model$outcome,
+  burdenko_model$cv_probability,
+  quiet = TRUE,
+  direction = "<"
+)
+
+development_threshold <- as.numeric(
+  coords(
+    development_roc,
+    x = "best",
+    best.method = "youden",
+    ret = "threshold",
+    transpose = FALSE
+  )[1, 1]
+)
+```
+
+## 5.3 Freeze the model and test it once in LUMIERE
+
+```{r}
+#| label: external-validation
+
+full_age_median <- median(burdenko_model$age, na.rm = TRUE)
+x_burdenko <- prepare_design(burdenko_model, full_age_median)
+x_lumiere <- prepare_design(lumiere_model, full_age_median)
+
+set.seed(123)
+final_foldid <- make_stratified_folds(burdenko_model$outcome, k = 5)
+
+final_ridge_cv <- cv.glmnet(
+  x = x_burdenko,
+  y = burdenko_model$outcome,
+  family = "binomial",
+  alpha = 0,
+  foldid = final_foldid,
+  type.measure = "deviance"
+)
+
+lumiere_model$probability <- as.numeric(
+  predict(
+    final_ridge_cv,
+    newx = x_lumiere,
+    s = "lambda.min",
+    type = "response"
+  )
+)
+
+classification_metrics <- function(truth, probability, threshold) {
+  prediction <- as.integer(probability >= threshold)
+  tp <- sum(prediction == 1 & truth == 1)
+  tn <- sum(prediction == 0 & truth == 0)
+  fp <- sum(prediction == 1 & truth == 0)
+  fn <- sum(prediction == 0 & truth == 1)
+
+  tibble(
+    roc_auc = as.numeric(auc(roc(truth, probability, quiet = TRUE))),
+    sensitivity = tp / (tp + fn),
+    specificity = tn / (tn + fp),
+    balanced_accuracy = (
+      sensitivity + specificity
+    ) / 2,
+    brier_score = mean((probability - truth)^2)
+  )
+}
+
+performance <- bind_rows(
+  classification_metrics(
+    burdenko_model$outcome,
+    burdenko_model$cv_probability,
+    development_threshold
+  ) |>
+    mutate(evaluation = "Burdenko held-out cross-validation"),
+  classification_metrics(
+    lumiere_model$outcome,
+    lumiere_model$probability,
+    development_threshold
+  ) |>
+    mutate(evaluation = "LUMIERE external validation")
+) |>
+  select(evaluation, everything()) |>
+  mutate(across(where(is.numeric), \(x) round(x, 3)))
+
+performance |>
+  kable(caption = "Development and external-validation performance")
+```
+
+## 5.4 Uncertainty and sensitivity analysis
+
+The confidence interval below quantifies uncertainty in the external ROC AUC. Because LUMIERE contains only 79 evaluable patients, the interval is expected to be wide.
+
+```{r}
+#| label: external-confidence-interval
+
+lumiere_roc <- roc(
+  lumiere_model$outcome,
+  lumiere_model$probability,
+  quiet = TRUE
+)
+
+lumiere_auc_ci <- as.numeric(
+  ci.auc(lumiere_roc, method = "delong")
+)
+
+tibble(
+  estimate = round(lumiere_auc_ci[2], 3),
+  lower_95_ci = round(lumiere_auc_ci[1], 3),
+  upper_95_ci = round(lumiere_auc_ci[3], 3)
+) |>
+  kable(caption = "LUMIERE ROC AUC with 95% confidence interval")
+```
+
+The sensitivity analysis removes MGMT and IDH, which have different amounts of missingness in the two cohorts. It repeats the development-and-transfer procedure using age and sex only.
+
+```{r}
+#| label: clinical-sensitivity-model
+
+basic_formula <- ~ age + sex
+
+prepare_basic_design <- function(data, age_median) {
+  data |>
+    mutate(
+      age = if_else(is.na(age), age_median, age),
+      sex = factor(sex, levels = c("female", "male", "unknown"))
+    ) |>
+    model.matrix(basic_formula, data = _) |>
+    (\(x) x[, colnames(x) != "(Intercept)", drop = FALSE])()
+}
+
+set.seed(456)
+basic_outer_fold <- make_stratified_folds(
+  burdenko_model$outcome,
+  k = 5
+)
+basic_cv_probability <- rep(NA_real_, nrow(burdenko_model))
+
+for (fold in seq_len(5)) {
+  analysis_rows <- basic_outer_fold != fold
+  assessment_rows <- basic_outer_fold == fold
+  fold_age_median <- median(
+    burdenko_model$age[analysis_rows],
+    na.rm = TRUE
+  )
+
+  x_analysis <- prepare_basic_design(
+    burdenko_model[analysis_rows, ],
+    fold_age_median
+  )
+  x_assessment <- prepare_basic_design(
+    burdenko_model[assessment_rows, ],
+    fold_age_median
+  )
+
+  set.seed(456 + fold)
+  inner_folds <- make_stratified_folds(
+    burdenko_model$outcome[analysis_rows],
+    k = 5
+  )
+
+  basic_ridge_cv <- cv.glmnet(
+    x = x_analysis,
+    y = burdenko_model$outcome[analysis_rows],
+    family = "binomial",
+    alpha = 0,
+    foldid = inner_folds,
+    type.measure = "deviance"
+  )
+
+  basic_cv_probability[assessment_rows] <- as.numeric(
+    predict(
+      basic_ridge_cv,
+      newx = x_assessment,
+      s = "lambda.min",
+      type = "response"
+    )
+  )
+}
+
+basic_development_roc <- roc(
+  burdenko_model$outcome,
+  basic_cv_probability,
+  quiet = TRUE,
+  direction = "<"
+)
+
+basic_threshold <- as.numeric(
+  coords(
+    basic_development_roc,
+    x = "best",
+    best.method = "youden",
+    ret = "threshold",
+    transpose = FALSE
+  )[1, 1]
+)
+
+x_burdenko_basic <- prepare_basic_design(
+  burdenko_model,
+  full_age_median
+)
+x_lumiere_basic <- prepare_basic_design(
+  lumiere_model,
+  full_age_median
+)
+
+set.seed(456)
+basic_final_foldid <- make_stratified_folds(
+  burdenko_model$outcome,
+  k = 5
+)
+
+basic_final_model <- cv.glmnet(
+  x = x_burdenko_basic,
+  y = burdenko_model$outcome,
+  family = "binomial",
+  alpha = 0,
+  foldid = basic_final_foldid,
+  type.measure = "deviance"
+)
+
+basic_lumiere_probability <- as.numeric(
+  predict(
+    basic_final_model,
+    newx = x_lumiere_basic,
+    s = "lambda.min",
+    type = "response"
+  )
+)
+
+sensitivity_performance <- bind_rows(
+  classification_metrics(
+    burdenko_model$outcome,
+    basic_cv_probability,
+    basic_threshold
+  ) |>
+    mutate(evaluation = "Burdenko held-out cross-validation"),
+  classification_metrics(
+    lumiere_model$outcome,
+    basic_lumiere_probability,
+    basic_threshold
+  ) |>
+    mutate(evaluation = "LUMIERE external validation")
+) |>
+  select(evaluation, everything()) |>
+  mutate(across(where(is.numeric), \(x) round(x, 3)))
+
+sensitivity_performance |>
+  kable(caption = "Sensitivity analysis using age and sex only")
+```
+
+```{r}
+#| label: external-prediction-plot
+#| fig-cap: "Frozen Burdenko model probabilities in the independent LUMIERE cohort."
+
+lumiere_model |>
+  mutate(
+    observed = if_else(outcome == 1, "progression", "non_progression")
+  ) |>
+  ggplot(aes(x = observed, y = probability, colour = observed)) +
+  geom_jitter(width = 0.12, height = 0, alpha = 0.75) +
+  geom_hline(
+    yintercept = development_threshold,
+    linetype = "dashed"
+  ) +
+  labs(
+    x = "Observed LUMIERE response",
+    y = "Predicted probability of progression",
+    colour = "Observed"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+# 6. Interpretation
+
+This analysis now directly attempts Question 1: the complete predictor is developed in Burdenko and transferred without refitting to LUMIERE. External performance, rather than development performance alone, determines whether the predictor works across datasets.
+
+The held-out Burdenko ROC AUC was `r sprintf("%.3f", performance$roc_auc[1])`, while the independent LUMIERE ROC AUC was `r sprintf("%.3f", performance$roc_auc[2])`. At the development-selected threshold, LUMIERE balanced accuracy was `r sprintf("%.3f", performance$balanced_accuracy[2])`. Therefore, this clinical baseline does **not** provide evidence of a useful transportable predictor. The correct conclusion is not that cross-dataset prediction is impossible, but that age, sex, MGMT and IDH alone are insufficient under the present endpoint definitions and cohort shift.
+
+The external AUC 95% confidence interval was `r sprintf("%.3f", lumiere_auc_ci[1])` to `r sprintf("%.3f", lumiere_auc_ci[3])`. The age-and-sex-only sensitivity model produced an external AUC of `r sprintf("%.3f", sensitivity_performance$roc_auc[2])`. Thus, the conclusion does not depend on whether the incompletely observed molecular predictors are included.
+
+The model should be interpreted as a clinical baseline, not yet as a definitive radiotherapy-response model. The outcome is a post-treatment radiographic assessment, but the shared predictors do not quantify radiation dose, target volume or longitudinal tumour change. A low external AUC would still be an important answer: it would show that these routinely available clinical variables do not transport adequately and that imaging or treatment-specific features are required.
+
+# 7. Controlled imaging extension
+
+The General Commons cart supplied 611 Burdenko RTPLAN/RTSTRUCT files (180 RTPLAN and 431 RTSTRUCT). They are marked as controlled access. Once access is approved, the imaging extension will:
+
+1.  extract prescribed dose, fractionation and target volumes from Burdenko;
+2.  derive compatible pretreatment tumour-volume features in LUMIERE;
+3.  fit clinical-only, imaging-only and combined models;
+4.  preserve the same development-only training and one-time external test.
+
+# 8. Sensitivity analyses
+
+The completed age-and-sex-only model assesses whether molecular-data missingness drives the principal finding. Further analyses could exclude Burdenko pseudoprogression, compare progression with response only and restrict LUMIERE to a comparable post-RT time window. These are presented as future analyses rather than completed results to avoid overstating the available evidence.
+
+# 9. Connection to Question 3
+
+After completing the conventional predictor, a longitudinal tumour-growth ODE will be fitted using serial tumour-volume measurements:
+
+\[ \frac{dV}{dt} = rV\left(1-\frac{V}{K}\right) - \gamma(t)V \]
+
+where (V) is tumour volume, (r) is patient-specific growth rate, (K) is carrying capacity and (\gamma(t)) represents treatment effect. The analysis will test whether ODE-derived growth and treatment-effect parameters improve external response prediction beyond the clinical baseline.
+
+# 10. Final answer to Question 1
+
+A predictor can be developed and evaluated across the two datasets, but the model tested here did not achieve useful external discrimination. A ridge logistic-regression pipeline trained in Burdenko and transferred unchanged to LUMIERE achieved an external ROC AUC of `r sprintf("%.3f", performance$roc_auc[2])` (95% CI `r sprintf("%.3f", lumiere_auc_ci[1])`–`r sprintf("%.3f", lumiere_auc_ci[3])`) and balanced accuracy of `r sprintf("%.3f", performance$balanced_accuracy[2])`.
+
+The findings therefore do not support a generalisable response predictor based only on age, sex, MGMT and IDH. Harmonised radiotherapy and longitudinal imaging features are the most important next step, but the Burdenko DICOM data require controlled access and could not be obtained within the project timeframe.
+
+# References
+
+Friedman, J., Hastie, T. and Tibshirani, R. (2010) 'Regularization paths for generalized linear models via coordinate descent', *Journal of Statistical Software*, 33(1), pp. 1–22. doi: [10.18637/jss.v033.i01](https://doi.org/10.18637/jss.v033.i01).
+
+Suter, Y., Knecht, U., Valenzuela, W., Notter, M., Hewer, E., Schucht, P., Wiest, R. and Reyes, M. (2022) 'The LUMIERE dataset: Longitudinal glioblastoma MRI with expert RANO evaluation', *Scientific Data*, 9, 768. doi: [10.1038/s41597-022-01881-7](https://doi.org/10.1038/s41597-022-01881-7).
+
+Wen, P.Y., Macdonald, D.R., Reardon, D.A., Cloughesy, T.F., Sorensen, A.G., Galanis, E., DeGroot, J., Wick, W., Gilbert, M.R., Lassman, A.B., Tsien, C., Mikkelsen, T., Wong, E.T., Chamberlain, M.C., Stupp, R., Lamborn, K.R., Vogelbaum, M.A., van den Bent, M.J. and Chang, S.M. (2010) 'Updated response assessment criteria for high-grade gliomas: Response Assessment in Neuro-Oncology Working Group', *Journal of Clinical Oncology*, 28(11), pp. 1963–1972. doi: [10.1200/JCO.2009.26.3541](https://doi.org/10.1200/JCO.2009.26.3541).
+
+Zolotova, S.V., Golanov, A.V., Pronin, I.N., Dalechina, A.V., Nikolaeva, A.A., Belyashova, A.S., Usachev, D.Y., Kondrateva, E.A., Druzhinina, P.V., Shirokikh, B.N., Saparov, T.N., Belyaev, M.G. and Kurmukov, A.I. (2023) *Burdenko's Glioblastoma Progression Dataset (Burdenko-GBM-Progression)*, Version 1. The Cancer Imaging Archive. doi: [10.7937/E1QP-D183](https://doi.org/10.7937/E1QP-D183).
