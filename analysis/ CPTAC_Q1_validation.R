@@ -5,12 +5,6 @@
 # p53-Ser15 phosphorylation at DDR = 0.12) replicates in CPTAC-GBM, an
 # independent cohort never used to fit the ODE model or select that feature.
 #
-# This deliberately does NOT re-scan all 20 CPTAC features to find a new
-# "best" one for the headline result — picking whichever feature looks best
-# inside the validation set would just be re-fitting to it, not validating.
-# Section 3 below tests the single pre-specified TCGA feature. Section 4 is
-# an exploratory full scan included only for context/discussion.
-#
 # Prerequisites: Run CPTAC_p53_preproc.R -> CPTAC_p53_model.ipynb first.
 
 library(tidyverse)
