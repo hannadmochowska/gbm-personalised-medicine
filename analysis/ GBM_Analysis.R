@@ -1,9 +1,5 @@
 # GBM p53 ODE Model — Survival Analysis
 #
-# Does the p53 ODE model predict patient survival in TCGA-GBM?
-# (This answers the final project brief's Q3: "Are there any ODE models
-# that are useful?" — using Assignment 2's original analysis code.)
-#
 # Prerequisites: Run GBM_p53_preproc.R → GBM_p53_model.ipynb first.
 
 # 0. Packages & shared settings
