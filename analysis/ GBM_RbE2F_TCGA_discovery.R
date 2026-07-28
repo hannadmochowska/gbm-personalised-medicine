@@ -5,13 +5,6 @@
 # GBM_Analysis.R (the p53 model discovery analysis), applied to the new
 # Rb-E2F pathway instead.
 #
-# This is DISCOVERY, not validation: it scans all 20 candidate features
-# (10 serum-stimulus levels x 2 readouts: E2F, phospho-Rb) to find the best
-# one in TCGA. Per the agreed plan, only if this shows something worth
-# reporting should CPTAC validation be attempted next (mirroring how the p53
-# CPTAC validation only tested TCGA's pre-specified best feature, never
-# re-scanned CPTAC's own data).
-#
 # Prerequisites: Run GBM_RbE2F_preproc.R -> GBM_RbE2F_model.ipynb first.
 
 library(tidyverse)
