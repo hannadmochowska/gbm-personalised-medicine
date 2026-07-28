@@ -7,13 +7,6 @@
 # to an independent cohort? A single number (the C-index / Cox p-value
 # below) answers it either way.
 #
-# (This is a duplicate of Q1_validate_signature_CPTAC.R, recreated under a
-# new filename after the original became locked/inaccessible via a mount
-# issue. No code changes — CPTAC has no duplicate-patient problem, so this
-# script never needed the deduplication fix applied to the TCGA-side
-# scripts. Once the original file is accessible again, this duplicate can
-# be deleted.)
-#
 # Prerequisites (run first, in this order):
 #   CPTAC_p53_preproc.R, CPTAC_RbE2F_preproc.R, CPTAC_Pappalardo_preproc.R,
 #   CPTAC_p53_model.ipynb (produces CPTAC_p53s15DR_patients.csv / s46),
