@@ -4,11 +4,6 @@
 # candidate features against TCGA-GBM survival. Mirrors GBM_RbE2F_TCGA_discovery.R
 # and the Q1 block of GBM_Analysis.R (p53), applied to this third pathway.
 #
-# This is DISCOVERY, not validation: it scans all 20 candidate features
-# (10 growth-factor levels x 2 readouts: ERK, AKT) to find the best one in
-# TCGA. Per the agreed plan, CPTAC validation is only worth doing if this
-# shows something worth reporting.
-#
 # Prerequisites: Run GBM_Pappalardo_preproc.R -> GBM_Pappalardo_model.ipynb first.
 
 library(tidyverse)
