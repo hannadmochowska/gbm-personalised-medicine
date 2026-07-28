@@ -24,11 +24,6 @@
 #     level, which would just reintroduce single-feature cherry-picking)
 #   - AGE, SEX_MALE, IDH_MUT
 #
-# Same discipline as v1: trains ONLY on TCGA-GBM, saves frozen coefficients,
-# Q1_validate_signature_CPTAC_v2.R applies them unchanged to CPTAC-GBM.
-# Uses "_v2" filenames throughout so it never overwrites the v1 result files
-# (a real mix-up that happened during the v1 robustness check).
-#
 # Prerequisites (run first, in this order):
 #   GBM_p53_preproc.R, GBM_RbE2F_preproc.R, GBM_Pappalardo_preproc.R,
 #   GBM_p53_model.ipynb (produces GBM_p53s15DR_patients.csv / s46),
