@@ -1,6 +1,6 @@
 # TCGA-GBM Pappalardo (RTK/RAS/MAPK + PI3K/AKT/mTOR) ODE Discovery — Question 1 (new pathway)
 #
-# Purpose: Discovery-only scan of the Pappalardo RTK/PI3K/MAPK ODE model's
+# Purpose: Discovery-only scan of the RTK/PI3K/MAPK ODE model's
 # candidate features against TCGA-GBM survival. Mirrors GBM_RbE2F_TCGA_discovery.R
 # and the Q1 block of GBM_Analysis.R (p53), applied to this third pathway.
 #
