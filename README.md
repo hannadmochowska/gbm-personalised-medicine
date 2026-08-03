@@ -1,99 +1,128 @@
-# GBM Personalised Medicine: Are Mechanistic ODE Pathway Models Useful Predictors of Survival?
+# Glioblastoma Personalised Medicine: Mechanistic ODE Modeling, Cross-Dataset Validation & Target Discovery
 
-Final project for AI for Personalised Medicine. Tests whether three published, mechanistically grounded ODE models of glioblastoma (GBM) signalling pathways, parameterised from routine bulk RNA-seq, can predict patient overall survival — individually and combined into a single cross-dataset signature.
+[![Course Project](https://img.shields.io/badge/Course-AI_for_Personalised_Medicine-blue.svg)]()
+[![Disease Focus](https://img.shields.io/badge/Disease-Glioblastoma_Multiforme_(GBM)-red.svg)]()
 
-## Questions addressed
+This repository contains the complete computational pipeline, ODE differential equation solvers, machine learning signatures, cross-dataset transportability evaluations, target discovery analyses, and Quarto reports for the **AI for Personalised Medicine** project on **Glioblastoma Multiforme (GBM)**.
 
-- **Q3** (are there any useful ODE models?): three models tested individually, one each for DNA-damage response (p53), cell-cycle control (Rb-E2F), and growth-factor signalling (RTK/RAS/MAPK + PI3K/AKT/mTOR). None predicted survival alone.
-- **Q1** (does a predictor generalise across datasets?): two tests. (1) The p53 model's single TCGA discovery feature, tested unchanged in an independent cohort (CPTAC-GBM) — did not replicate. (2) A regularised signature pooling features from all three pathways plus age, cross-validated on TCGA-GBM and frozen, tested unchanged on CPTAC-GBM — **generalised**, with a real, non-trivial effect.
-- **Q2 correlation check** (does the drug-viability predictor from Q2 correlate with Q1?): tested directly by correlating the two predictors' outputs patient by patient. No meaningful correlation in either cohort — the two predictors appear to capture different biology.
+---
 
-## Result summary
+## Project Executive Summary & Mapping to Course Questions
 
-**Individual models (single best-scanned feature each):** no model produced a validated, generalisable survival predictor.
+| Question | Core Topic | Computational / Analytical Strategy | Key Finding & Headline Result | Detailed Documentation |
+| :---: | :--- | :--- | :--- | :--- |
+| **Q1** | **Cross-Dataset Transportability** | Penalised Cox regression (LASSO) combining pathway features, gene expression, and clinical variables (TCGA $\to$ CPTAC). | **Signature Generalises ($C\text{-index} = 0.589, p = 0.022$)**. Individual gene resolution (*SIAH1*, *PTEN*, *MAPK1*) retains true pathway signal. | [`docs/Q1_Q3_pathway_signature.md`](docs/Q1_Q3_pathway_signature.md)<br>[`docs/Q1_MGMT_methylation.md`](docs/Q1_MGMT_methylation.md) |
+| **Q2** | **Drug Viability Correlation Check** | Direct patient-by-patient correlation between Q2 in vitro DepMap TMZ score and Q1 patient overall survival risk. | **No Correlation ($r \approx 0.04, p > 0.50$)**. In vitro drug screens and in vivo survival capture orthogonal biology. | [`docs/Q1_Q3_pathway_signature.md`](docs/Q1_Q3_pathway_signature.md) |
+| **Q3** | **Mechanistic ODE Pathway & Volume Models** | Parameterised 3 signaling ODE models (p53, Rb-E2F, RTK/PI3K/MAPK) from RNA-seq + 1 longitudinal MRI volume ODE ($dV/dt = rV$). | Standalone signaling ODE features failed to replicate alone ($HR = 0.98, p = 0.982$). Longitudinal growth rate $r$ failed RANO progression prediction ($AUC = 0.494$). | [`docs/Q1_Q3_pathway_signature.md`](docs/Q1_Q3_pathway_signature.md)<br>[`docs/Q1_Q3_radiotherapy_ODE.md`](docs/Q1_Q3_radiotherapy_ODE.md) |
+| **Q4** | **Selective Target Discovery** | Genome-wide DepMap 23Q4 CRISPR knockout screen differential dependency scoring ($\Delta$) + DDR & LINCS L1000 mapping. | Nominated top novel candidates: **`CHMP4B`** ($\text{FDR} = 3.2\times 10^{-11}$), **`RPP25L`**, **`FERMT2`**, **`GPX4`**, **`ITGAV`**. Evaluated *SOX2*/*OLIG2* FDR limitations. | [`docs/Q4_target_discovery.md`](docs/Q4_target_discovery.md) |
+| **Q5** | **Treatment Selection** | Clinical synthesis on prognostic vs. predictive biomarkers and platform calibration drift. | Delineated prognostic (Age, IDH, Q1 signature) vs. predictive (MGMT) markers. Highlighted threshold calibration shifts. | [`docs/Q5_treatment_selection.md`](docs/Q5_treatment_selection.md) |
 
-| Model | Pathway | TCGA discovery | CPTAC validation |
-|---|---|---|---|
-| p53 | DNA-damage response | HR = 0.78, p = 0.065 (borderline) | HR = 0.98, p = 0.982 (did not replicate) |
-| Rb-E2F | Cell-cycle restriction point | Clean null (all 20 features p > 0.3) | Not pursued, no discovery signal |
-| RTK/PI3K/MAPK | Growth-factor signalling | Clean null (all 20 features HR ≈ 1) | Not pursued, no discovery signal |
+---
 
-See the report for the full discussion of why (MGMT/IDH status not modelled, bulk RNA-seq averaging over tumour heterogeneity, static snapshot vs. dynamic biology, small unstable Kaplan-Meier subgroups).
+## Datasets Overview
 
-**Combined cross-dataset signature (Q1):** pooling features across all three pathways, plus age, and letting a cross-validated penalised Cox model (LASSO vs. Elastic Net) select and weight them jointly — rather than hand-picking one feature — produces a signature that does generalise.
+All datasets are publicly available from cBioPortal, TCGA, CPTAC, LUMIERE, or Broad DepMap:
 
-| Specification | Candidate features | CPTAC C-index | CPTAC Cox p | What survived regularisation |
-|---|---|---|---|---|
-| Individual genes + ODE outputs | 48 (24 pathway genes, 20 p53 ODE outputs, age/sex/IDH, DepMap TMZ score) | 0.589 | 0.022 | SIAH1, PTEN, MAPK1, one p53 ODE feature, age |
-| Pathway-level mean scores | 8 (one mean score per pathway + age/sex/IDH) | 0.587 | 0.011 | age only |
+| Dataset | Study ID / Source | Cohort Role | $N$ Patients | Data Modalities Used |
+| :--- | :--- | :--- | :---: | :--- |
+| **TCGA-GBM** | `gbm_tcga_pan_can_atlas_2018` | Discovery / Training | 154 / 106 | Bulk RNA-seq, HM450 Methylation, Survival, Age, Sex, IDH |
+| **CPTAC-GBM** | `gbm_cptac_2021` | External Validation | 96 / 97 | Bulk RNA-seq (FPKM), EPIC Methylation, Survival, Age, Sex |
+| **Burdenko-GBM** | Burdenko Progression Dataset | Radiotherapy Dev | 178 | Clinical variables (Age, Sex, MGMT, IDH) & Radiographic response |
+| **LUMIERE** | LUMIERE MRI Cohort | Radiotherapy Val / ODE | 79 / 77 | Serial automated 3D MRI volume segmentations & Expert RANO |
+| **DepMap 23Q4** | Broad Institute DepMap | CRISPR Target Discovery | 68 GBM / 1,032 Other | Genome-wide CRISPR-Cas9 Chronos knockout dependency scores |
 
-Both specifications beat chance (bootstrap 95% CIs exclude 0.5), so the honest answer to Q1 is yes. But the two specifications reach it differently: individual-gene resolution finds real pathway biology (SIAH1, PTEN, MAPK1) alongside age; compressing each pathway into one mean score destroys that structure before the model ever sees it, leaving only age. This is the brief's "compromise between data availability and data completeness" playing out directly — full detail and interpretation in the report.
+---
 
-## Datasets
-
-Both accessed via cBioPortal.
-
-| Dataset | Study ID | Role | Patients used |
-|---|---|---|---|
-| TCGA-GBM (PanCancer Atlas 2018) | `gbm_tcga_pan_can_atlas_2018` | Discovery, all 3 models + Q1 signature | 154 (individual models) / 106 (Q1 signature, all feature sources + age required) |
-| CPTAC-GBM (Wang et al., Cancer Cell 2021) | `gbm_cptac_2021` | Validation | 96 |
-
-Patient counts differ between the individual-model analyses and the Q1 signature because the signature requires every candidate feature (all three pathways, ODE outputs, age, IDH, DepMap score) to be present for a patient, which is a stricter filter than any single model needs on its own.
-
-Raw data files are not committed to this repo (too large). Download both studies from cBioPortal and place them in `data/gbm_tcga_pan_can_atlas_2018/` and `data/gbm_cptac_2021/` before running the pipeline.
-
-## Known data-quality issue (fixed)
-
-5 TCGA-GBM patients have two archived tumour samples each. An early version of the Q1 signature scripts merged per-gene feature files on patient ID without deduplicating first, which compounded across several joins and silently represented one patient's record 32 times in the training data — caught by independently re-deriving the merge in Python and finding the row count didn't match the number of unique patient IDs. All `Q1_*` and `Q2_Q1_correlation.R` scripts now deduplicate to one row per patient (the primary tumour sample) before joining. The individual-model discovery scripts (`GBM_Analysis.R`, `GBM_RbE2F_TCGA_discovery.R`, `GBM_Pappalardo_TCGA_discovery.R`) use the same raw per-gene files and merge pattern and have not yet been audited for the same issue — worth checking before treating their null results as final.
-
-## Repo structure
+## Repository Directory Structure
 
 ```
-preprocessing/   R scripts: extract pathway genes per patient, normalise to relative expression
-models/          Jupyter notebooks: solve each ODE model per patient, output candidate features
-analysis/        R scripts: Cox regression / Kaplan-Meier discovery, validation, and the Q1 combined signature
-reports/         Final write-ups (.docx)
+gbm-personalised-medicine/
+├── README.md                        <- Primary entry point & project mapping table
+│
+├── preprocessing/                   <- R scripts: normalize bulk RNA-seq for ODE models
+│   ├── GBM_p53_preproc.R            # Preprocess TCGA RNA-seq for p53 ODE model
+│   ├── CPTAC_p53_preproc.R          # Preprocess CPTAC RNA-seq for p53 ODE model
+│   ├── GBM_RbE2F_preproc.R          # Preprocess TCGA RNA-seq for Rb-E2F ODE model
+│   ├── CPTAC_RbE2F_preproc.R        # Preprocess CPTAC RNA-seq for Rb-E2F ODE model
+│   ├── GBM_Pappalardo_preproc.R     # Preprocess TCGA for RTK/PI3K/MAPK ODE model
+│   └── CPTAC_Pappalardo_preproc.R   # Preprocess CPTAC for RTK/PI3K/MAPK ODE model
+│
+├── models/                          <- Jupyter notebooks: solve ODE systems per patient
+│   ├── GBM_p53_model.ipynb          # Solve 20 p53 ODE state equations per TCGA patient
+│   ├── CPTAC_p53_model.ipynb        # Solve p53 ODE state equations per CPTAC patient
+│   ├── GBM_RbE2F_model.ipynb        # Solve 20 Rb-E2F ODE state equations per TCGA patient
+│   ├── GBM_Pappalardo_model.ipynb   # Solve 20 RTK/PI3K/MAPK ODE equations per TCGA patient
+│   └── Q4_GBM_DepMap_LINCS_Target_Discovery.ipynb # DepMap CRISPR target discovery notebook
+│
+├── analysis/                        <- R scripts: Cox regression, signatures, validation
+│   ├── GBM_Analysis.R               # Discovery scan for p53 ODE features (TCGA)
+│   ├── CPTAC_Q1_validation.R        # Independent validation of p53 ODE feature (CPTAC)
+│   ├── GBM_RbE2F_TCGA_discovery.R   # Discovery scan for Rb-E2F ODE features
+│   ├── GBM_Pappalardo_TCGA_discovery.R # Discovery scan for RTK/PI3K/MAPK ODE features
+│   ├── Q1_extract_IDH_status.R      # Derive IDH1/IDH2 mutation status across cohorts
+│   ├── Q1_extract_depmap_signature.R # Project Assignment 2 DepMap TMZ score onto cohorts
+│   ├── Q1_build_signature_TCGA.R    # Train multi-pathway Cox LASSO signature on TCGA
+│   ├── Q1_validate_signature_CPTAC.R # Validate frozen Q1 signature on CPTAC-GBM
+│   ├── Q1_build_signature_TCGA_v2.R  # Train pathway-mean compressed signature
+│   ├── Q1_validate_signature_CPTAC_v2.R # Validate pathway-mean signature
+│   └── Q2_Q1_correlation.R          # Correlate Q2 drug score against Q1 survival risk
+│
+├── reports/                         <- Rendered Quarto reports and HTML deliverables
+│   ├── Q1_MGMT_cross_dataset.qmd / .html
+│   ├── Q1_radiotherapy_response_model.qmd / .html
+│   └── Q3_LUMIERE_ODE_model.qmd / .html
+│
+├── figures/                         <- Output tables & publication figures for Q4
+│   ├── gbm_top30_targets.csv
+│   ├── gbm_selective_dependencies.csv
+│   ├── gbm_ddr_signature_overlap.csv
+│   ├── gbm_depmap_volcano.png
+│   ├── gbm_depmap_waterfall.png
+│   ├── gbm_depmap_target_boxplots.png
+│   └── gbm_depmap_ddr_signature.png
+│
+├── docs/                            <- Detailed sub-analysis documentation
+│   ├── Q1_Q3_pathway_signature.md   # Main signaling ODEs & Q1 signature documentation
+│   ├── Q1_MGMT_methylation.md       # Cross-dataset MGMT promoter methylation classifier
+│   ├── Q1_Q3_radiotherapy_ODE.md    # Radiotherapy response & LUMIERE volume ODE docs
+│   ├── Q4_target_discovery.md       # DepMap CRISPR selective target discovery docs
+│   └── Q5_treatment_selection.md    # Treatment selection & prognostic/predictive synthesis
+│
+└── presentation/                    <- Slides & final presentation deliverables
 ```
 
-## How to run
+---
 
-Each pathway is a three-step pipeline: preprocess -> simulate -> analyse. Run in this order.
+## Note on External Prerequisites & Assignment 2 Dependencies
 
-**p53 (TCGA discovery):**
-1. `preprocessing/GBM_p53_preproc.R`
-2. `models/GBM_p53_model.ipynb`
-3. `analysis/GBM_Analysis.R`
+- **Data Download**: Raw cBioPortal matrices (`gbm_tcga_pan_can_atlas_2018` and `gbm_cptac_2021`) are omitted due to file size. Place them in `data/` before running preprocessing.
+- **`Q1_extract_depmap_signature.R`**: Relies on `GBM_cellline_coefs.csv` (the Assignment 2 GDSC2/DepMap 10-gene temozolomide sensitivity LASSO coefficients). If re-running from scratch, ensure `GBM_cellline_coefs.csv` is present in `analysis/`.
 
-**p53 (CPTAC validation, run after the TCGA step above):**
-1. `preprocessing/CPTAC_p53_preproc.R`
-2. `models/CPTAC_p53_model.ipynb`
-3. `analysis/CPTAC_Q1_validation.R`
+---
 
-**Rb-E2F (TCGA discovery):**
-1. `preprocessing/GBM_RbE2F_preproc.R`
-2. `models/GBM_RbE2F_model.ipynb`
-3. `analysis/GBM_RbE2F_TCGA_discovery.R`
+## How to Run the Pipeline
 
-**RTK/PI3K/MAPK (TCGA discovery):**
-1. `preprocessing/GBM_Pappalardo_preproc.R`
-2. `models/GBM_Pappalardo_model.ipynb`
-3. `analysis/GBM_Pappalardo_TCGA_discovery.R`
+Each pathway follows a 3-step execution workflow: **Preprocessing $\to$ ODE Simulation $\to$ Survival Analysis**.
 
-**Combined Q1 signature (run after all three pathways' TCGA preprocessing + model steps above, and the CPTAC steps for p53 and the CPTAC-only preprocessing for Rb-E2F/RTK-PI3K-MAPK):**
-1. `analysis/Q1_extract_IDH_status.R` — derives IDH1/IDH2 mutation status for both cohorts
-2. `analysis/Q1_extract_depmap_signature.R` — projects the Assignment 2 DepMap/GDSC2 TMZ-sensitivity signature onto both cohorts (needs `GBM_cellline_coefs.csv` from the Assignment 2 `DepMap_signature.R`, not included in this repo)
-3. `analysis/Q1_build_signature_TCGA.R` — trains the individual-gene-level signature on TCGA-GBM, freezes coefficients
-4. `analysis/Q1_validate_signature_CPTAC.R` — applies the frozen signature unchanged to CPTAC-GBM
-5. `analysis/Q1_build_signature_TCGA_v2.R` / `analysis/Q1_validate_signature_CPTAC_v2.R` — same process using pathway-level mean scores instead of individual genes (the availability/completeness comparison)
-6. `analysis/Q2_Q1_correlation.R` — correlates Q2's drug-viability score against the Q1 risk score directly, in both cohorts
+1. **p53 Pathway Pipeline**:
+   ```bash
+   Rscript preprocessing/GBM_p53_preproc.R
+   # Execute models/GBM_p53_model.ipynb in Jupyter
+   Rscript analysis/GBM_Analysis.R
+   
+   Rscript preprocessing/CPTAC_p53_preproc.R
+   # Execute models/CPTAC_p53_model.ipynb in Jupyter
+   Rscript analysis/CPTAC_Q1_validation.R
+   ```
 
-## Dependencies
+2. **Combined Q1 Multi-Pathway Signature**:
+   ```bash
+   Rscript analysis/Q1_extract_IDH_status.R
+   Rscript analysis/Q1_extract_depmap_signature.R
+   Rscript analysis/Q1_build_signature_TCGA.R
+   Rscript analysis/Q1_validate_signature_CPTAC.R
+   Rscript analysis/Q2_Q1_correlation.R
+   ```
 
-- R: `tidyverse`, `survival`, `survminer` (pulls in `ggpubr`), `glmnet`, `stringr`
-- Python: `numpy`, `pandas`, `scipy`, `matplotlib` (Jupyter notebook, no external ODE solver required)
-
-## Model sources
-
-- p53: Ma L, et al. PNAS. 2005;102(40):14266-14271.
-- Rb-E2F: Yao G, et al. Nat Cell Biol. 2008;10(4):476-482.
-- RTK/PI3K/MAPK: Pappalardo F, et al. PLoS ONE. 2016;11(3):e0152104.
+3. **Q4 DepMap CRISPR Target Discovery**:
+   Execute `models/Q4_GBM_DepMap_LINCS_Target_Discovery.ipynb` directly in Jupyter.

@@ -93,7 +93,10 @@ rbe2f_patients <- rbe2f_patients[keep_ids, ]
 rbe2f_patients$SAMPLE_ID  <- rownames(rna_t)[keep_ids]
 rbe2f_patients$PATIENT_ID <- patient_ids[keep_ids]
 
-cat(sprintf("TCGA-GBM patients with RNA + clinical data: %d\n", nrow(rbe2f_patients)))
+# Deduplicate to one primary tumor sample per patient ID
+rbe2f_patients <- rbe2f_patients[!duplicated(rbe2f_patients$PATIENT_ID), ]
+
+cat(sprintf("TCGA-GBM patients with RNA + clinical data (deduplicated): %d\n", nrow(rbe2f_patients)))
 
 # 3. Normalize (column-wise mean so reference factor = 1)
 gene_cols <- RBE2F_GENES[RBE2F_GENES %in% colnames(rbe2f_patients)]

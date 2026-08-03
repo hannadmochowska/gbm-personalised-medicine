@@ -38,6 +38,10 @@ cat("Serum-stimulus levels modelled:", length(s_cols), "\n")
 EF_df$PATIENT_ID_12 <- str_sub(EF_df$PATIENT_ID, end = 12)
 RP_df$PATIENT_ID_12 <- str_sub(RP_df$PATIENT_ID, end = 12)
 
+# Deduplicate to one primary tumor sample per patient ID
+EF_df <- EF_df[!duplicated(EF_df$PATIENT_ID_12), ]
+RP_df <- RP_df[!duplicated(RP_df$PATIENT_ID_12), ]
+
 common_ids <- Reduce(intersect, list(
   rownames(clin_raw),
   EF_df$PATIENT_ID_12,

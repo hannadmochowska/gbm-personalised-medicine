@@ -86,18 +86,17 @@ These qualifications must remain in any presentation or final submission.
 
 ## Report
 
-The canonical corrected report is:
+The canonical report is:
 
 ```text
-/Users/saidatbello/Documents/AI in P - final project/
-Q1_MGMT_cross_dataset_FIXED.qmd
+reports/Q1_MGMT_cross_dataset.qmd
 ```
 
-Its rendered HTML is stored in the same directory.
+Its rendered HTML is stored in the same directory (`reports/Q1_MGMT_cross_dataset.html`).
 
 ## How to run
 
-1. Open `Q1_MGMT_cross_dataset_FIXED.qmd` in RStudio.
+1. Open `reports/Q1_MGMT_cross_dataset.qmd` in RStudio.
 2. Keep the TCGA and CPTAC clinical, expression and methylation files in the
    project directory using the filenames defined in the report.
 3. Select **Render**.

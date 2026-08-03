@@ -37,6 +37,10 @@ cat("Growth-factor levels modelled:", length(gf_cols), "\n")
 ERK_df$PATIENT_ID_12 <- str_sub(ERK_df$PATIENT_ID, end = 12)
 AKT_df$PATIENT_ID_12 <- str_sub(AKT_df$PATIENT_ID, end = 12)
 
+# Deduplicate to one primary tumor sample per patient ID
+ERK_df <- ERK_df[!duplicated(ERK_df$PATIENT_ID_12), ]
+AKT_df <- AKT_df[!duplicated(AKT_df$PATIENT_ID_12), ]
+
 common_ids <- Reduce(intersect, list(
   rownames(clin_raw),
   ERK_df$PATIENT_ID_12,

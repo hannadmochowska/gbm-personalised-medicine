@@ -87,15 +87,11 @@ work rather than completed results.
 ## Reports
 
 ```text
-cross-dataset radiotherapy-response model..qmd  Q1 analysis
-Q3_LUMIERE_ODE_model.qmd                       Q3 analysis
+reports/Q1_radiotherapy_response_model.qmd  Q1 analysis
+reports/Q3_LUMIERE_ODE_model.qmd             Q3 analysis
 ```
 
-Both reports are stored in:
-
-```text
-/Users/saidatbello/Documents/AI in P Final project 2/
-```
+Both reports and rendered HTML files are stored in `reports/`.
 
 ## How to run
 

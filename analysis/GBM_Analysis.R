@@ -38,6 +38,10 @@ cat("DDR levels modelled:", length(ddr_cols), "\n")
 p53s15$PATIENT_ID_12 <- str_sub(p53s15$PATIENT_ID, end = 12)
 p53s46$PATIENT_ID_12 <- str_sub(p53s46$PATIENT_ID, end = 12)
 
+# Deduplicate to one primary tumor sample per patient ID
+p53s15 <- p53s15[!duplicated(p53s15$PATIENT_ID_12), ]
+p53s46 <- p53s46[!duplicated(p53s46$PATIENT_ID_12), ]
+
 common_ids <- Reduce(intersect, list(
   rownames(clin_raw),
   p53s15$PATIENT_ID_12,

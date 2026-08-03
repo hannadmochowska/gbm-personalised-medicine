@@ -96,7 +96,10 @@ patient_df <- patient_df[keep_ids, ]
 patient_df$SAMPLE_ID  <- rownames(rna_t)[keep_ids]
 patient_df$PATIENT_ID <- patient_ids[keep_ids]
 
-cat(sprintf("TCGA-GBM patients with RNA + clinical data: %d\n", nrow(patient_df)))
+# Deduplicate to one primary tumor sample per patient ID
+patient_df <- patient_df[!duplicated(patient_df$PATIENT_ID), ]
+
+cat(sprintf("TCGA-GBM patients with RNA + clinical data (deduplicated): %d\n", nrow(patient_df)))
 
 # 3. Normalize (column-wise mean so reference factor = 1)
 gene_cols <- PAPPALARDO_GENES[PAPPALARDO_GENES %in% colnames(patient_df)]

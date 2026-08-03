@@ -97,7 +97,10 @@ p53_patients <- p53_patients[keep_ids, ]
 p53_patients$SAMPLE_ID  <- rownames(rna_t)[keep_ids]
 p53_patients$PATIENT_ID <- patient_ids[keep_ids]
 
-cat(sprintf("TCGA-GBM patients with RNA + clinical data: %d\n", nrow(p53_patients)))
+# Deduplicate to one primary tumor sample per patient ID
+p53_patients <- p53_patients[!duplicated(p53_patients$PATIENT_ID), ]
+
+cat(sprintf("TCGA-GBM patients with RNA + clinical data (deduplicated): %d\n", nrow(p53_patients)))
 
 # 3. Normalize (column-wise mean so reference factor = 1)
 gene_cols <- P53_GENES[P53_GENES %in% colnames(p53_patients)]
