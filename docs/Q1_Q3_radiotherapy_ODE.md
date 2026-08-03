@@ -1,9 +1,6 @@
 # GBM Personalised Medicine: Cross-Dataset Response Prediction and Longitudinal ODE Modelling
 
-Final project for AI for Personalised Medicine. This work asks whether
-radiographic response in glioblastoma (GBM) can be predicted across independent
-datasets and whether a mechanistic ordinary differential equation (ODE) provides
-a useful representation of longitudinal tumour behaviour.
+This analysis evaluates whether radiographic response in glioblastoma (GBM) can be predicted across independent datasets and whether a mechanistic ordinary differential equation (ODE) provides a useful representation of longitudinal tumour behaviour.
 
 ## Questions addressed
 

@@ -11,7 +11,7 @@
 # do the two predictors' OUTPUTS correlate with each other, patient by
 # patient, independent of any shared model?
 #
-#   Q2 predictor = DEPMAP_TMZ_SCORE (Assignment 2's LASSO/GDSC2 signature,
+#   Q2 predictor = DEPMAP_TMZ_SCORE (the LASSO/GDSC2 signature,
 #                  trained on GBM cell-line TMZ sensitivity, projected onto
 #                  each patient's own expression)
 #   Q1 predictor = the headline 9-feature signature risk score from

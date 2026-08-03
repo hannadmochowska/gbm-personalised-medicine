@@ -26,8 +26,8 @@
 #     all three pathways in both cohorts, but ODE-simulated dynamics only
 #     where both cohorts have them.
 #   - AGE, SEX (dummy), IDH_MUT
-#   - DEPMAP_TMZ_SCORE — the Assignment 2 LASSO/GDSC2 TMZ-sensitivity
-#     signature (10 genes, all confirmed present in both cohorts), the
+#   - DEPMAP_TMZ_SCORE — the GDSC2/DepMap 10-gene TMZ-sensitivity
+#     signature (all confirmed present in both cohorts), the
 #     strongest single-feature discovery result in this project before now,
 #     never previously tested for cross-dataset replication.
 #

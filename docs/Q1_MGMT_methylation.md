@@ -1,8 +1,6 @@
 # GBM Personalised Medicine: Cross-Dataset Prediction of MGMT Promoter Methylation
 
-Final project analysis for AI for Personalised Medicine. This work tests whether
-a gene-expression classifier of an MGMT promoter methylation biomarker can be
-developed in TCGA-GBM and transferred unchanged to CPTAC-GBM.
+This analysis tests whether a gene-expression classifier of an MGMT promoter methylation biomarker can be developed in TCGA-GBM and transferred unchanged to CPTAC-GBM.
 
 MGMT promoter methylation is associated with benefit from temozolomide, but it
 is a molecular biomarker rather than a direct measurement of patient response.

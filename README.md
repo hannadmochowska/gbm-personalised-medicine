@@ -1,13 +1,10 @@
 # Glioblastoma Personalised Medicine: Mechanistic ODE Modeling, Cross-Dataset Validation & Target Discovery
 
-[![Course Project](https://img.shields.io/badge/Course-AI_for_Personalised_Medicine-blue.svg)]()
-[![Disease Focus](https://img.shields.io/badge/Disease-Glioblastoma_Multiforme_(GBM)-red.svg)]()
-
-This repository contains the complete computational pipeline, ODE differential equation solvers, machine learning signatures, cross-dataset transportability evaluations, target discovery analyses, and Quarto reports for the **AI for Personalised Medicine** project on **Glioblastoma Multiforme (GBM)**.
+This repository provides a comprehensive computational framework for **Glioblastoma Multiforme (GBM)** translational research. It integrates mechanistic ordinary differential equation (ODE) signaling pathway models, longitudinal tumor dynamics, cross-dataset machine learning survival signatures, genome-wide DepMap CRISPR-Cas9 target discovery, and biomarker transportability evaluations across clinical patient cohorts (TCGA, CPTAC, LUMIERE, and Burdenko).
 
 ---
 
-## Project Executive Summary & Mapping to Course Questions
+## Project Executive Summary & Summary Table
 
 | Question | Core Topic | Computational / Analytical Strategy | Key Finding & Headline Result | Detailed Documentation |
 | :---: | :--- | :--- | :--- | :--- |
@@ -60,7 +57,7 @@ gbm-personalised-medicine/
 │   ├── GBM_RbE2F_TCGA_discovery.R   # Discovery scan for Rb-E2F ODE features
 │   ├── GBM_Pappalardo_TCGA_discovery.R # Discovery scan for RTK/PI3K/MAPK ODE features
 │   ├── Q1_extract_IDH_status.R      # Derive IDH1/IDH2 mutation status across cohorts
-│   ├── Q1_extract_depmap_signature.R # Project Assignment 2 DepMap TMZ score onto cohorts
+│   ├── Q1_extract_depmap_signature.R # Project DepMap TMZ viability score onto cohorts
 │   ├── Q1_build_signature_TCGA.R    # Train multi-pathway Cox LASSO signature on TCGA
 │   ├── Q1_validate_signature_CPTAC.R # Validate frozen Q1 signature on CPTAC-GBM
 │   ├── Q1_build_signature_TCGA_v2.R  # Train pathway-mean compressed signature
@@ -93,10 +90,10 @@ gbm-personalised-medicine/
 
 ---
 
-## Note on External Prerequisites & Assignment 2 Dependencies
+## Note on Data Prerequisites & External Signatures
 
 - **Data Download**: Raw cBioPortal matrices (`gbm_tcga_pan_can_atlas_2018` and `gbm_cptac_2021`) are omitted due to file size. Place them in `data/` before running preprocessing.
-- **`Q1_extract_depmap_signature.R`**: Relies on `GBM_cellline_coefs.csv` (the Assignment 2 GDSC2/DepMap 10-gene temozolomide sensitivity LASSO coefficients). If re-running from scratch, ensure `GBM_cellline_coefs.csv` is present in `analysis/`.
+- **`Q1_extract_depmap_signature.R`**: Relies on `GBM_cellline_coefs.csv` (the GDSC2/DepMap 10-gene temozolomide sensitivity LASSO coefficients). If re-running from scratch, ensure `GBM_cellline_coefs.csv` is present in `analysis/`.
 
 ---
 

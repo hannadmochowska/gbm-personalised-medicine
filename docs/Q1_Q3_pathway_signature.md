@@ -1,6 +1,6 @@
 # GBM Personalised Medicine: Are Mechanistic ODE Pathway Models Useful Predictors of Survival?
 
-Final project for AI for Personalised Medicine. Tests whether three published, mechanistically grounded ODE models of glioblastoma (GBM) signalling pathways, parameterised from routine bulk RNA-seq, can predict patient overall survival — individually and combined into a single cross-dataset signature.
+Tests whether three published, mechanistically grounded ODE models of glioblastoma (GBM) signalling pathways, parameterised from routine bulk RNA-seq, can predict patient overall survival — individually and combined into a single cross-dataset signature.
 
 ## Questions addressed
 
